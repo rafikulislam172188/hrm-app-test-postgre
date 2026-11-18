@@ -574,7 +574,7 @@ def search_box(label, key):
 
 def sign(df):
     df = df.copy()
-    df["Employee Signature"], df["Finger"] = "", ""
+    df["Emp Signature"], df["Finger"] = "", ""
     return df
 
 
