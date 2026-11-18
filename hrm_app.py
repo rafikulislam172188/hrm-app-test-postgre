@@ -524,7 +524,7 @@ def apply_f(df, sec=(), lt=(), pt=(), spn=(), co=(), qs=""):
     return df
 
 
-RATECOLS = {"rate", "Rate", "Monthly Basic Rate", "Hr Rate", "OT Rate", "OT_Rate", "ot_rate", "bill_rate", "Rate/hr", "active",
+RATECOLS = {"rate", "Rate", "M Basic", "Hr Rate", "OT Rate", "OT_Rate", "ot_rate", "bill_rate", "Rate/hr", "active",
             "id", "monthly_basic_rate", "hr_rate", "Years", "Monthly wage", "cycle_day"}
 
 
@@ -782,7 +782,7 @@ def download(df, name, hdr="", uid=""):
 
 
 PCOLS = ["Code", "Name", "Join Date", "Iqama ID", "Passport No", "Company", "Section", "Sponsor", "Labour", "Pay", "Mode",
-         "Monthly Basic Rate", "Hr Rate", "OT Rate", "Days", "Leave", "Absent", "Normal Hrs", "OT Hrs", "Wknd Hrs",
+         "M Basic", "Hr Rate", "OT Rate", "Days", "Leave", "Absent", "Normal Hrs", "OT Hrs", "Wknd Hrs",
          "Hol Hrs", "Total Hrs", "Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay",
          "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice"]
 PVIEW = [c for c in PCOLS if c != "Invoice"]
@@ -798,7 +798,7 @@ def _wd(y, m, we):
 
 def view_pay(p):
     d = p[PVIEW].copy()
-    for c in ("Monthly Basic Rate", "Hr Rate"):
+    for c in ("M Basic", "Hr Rate"):
         d[c] = d[c].where(d[c] != 0, "")
     return sign(d)
 
@@ -949,7 +949,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
             erows.append({"Code": r.code, "Name": r.name, "Join Date": r.join_date, "Iqama ID": r.id_no or "",
                           "Passport No": r.passport_no or "", "Company": nm(cn, cid), "Section": nm(sn, sid),
                           "Sponsor": nm(kn, kid), "Labour": r.labour_type, "Pay": r.pay_type, "Mode": r.pay_mode,
-                          "Monthly Basic Rate": r.rate if monthly else 0, "Hr Rate": 0 if monthly else r.rate,
+                          "M Basic": r.rate if monthly else 0, "Hr Rate": 0 if monthly else r.rate,
                           "OT Rate": otr_show, "Days": len(pres), "Leave": sum(1 for x in g if x[1] == "Leave"),
                           "Absent": days_ab, "Normal Hrs": reg_h, "OT Hrs": ot_h, "Wknd Hrs": wk_h, "Hol Hrs": hol_h,
                           "Total Hrs": tot_h, "Basic": basic, "Food": food, "Special Allow": spa, "Other Allow": oth,
