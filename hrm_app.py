@@ -212,7 +212,7 @@ def payslip_pdf(r, d1, d2):
     y = 800
     c.setFont("Helvetica-Bold", 16); c.drawString(50, y, f"{S('company')} - PAYSLIP"); y -= 25
     c.setFont("Helvetica", 11); c.drawString(50, y, f"Period: {d1} to {d2}"); y -= 30
-    money = {"Monthly Basic Rate", "Hr Rate", "OT Rate", "Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net"}
+    money = {"M Basic", "Hr Rate", "OT Rate", "Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net"}
     for k in r.index:
         if k in ("Invoice", "Bank", "Cash"):
             continue
