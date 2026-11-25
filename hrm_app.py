@@ -172,6 +172,32 @@ def q(sql, p=(), fetch=True):
     return df
 
 
+def q_many(sql, rows):
+    """One statement for many rows in ONE transaction (fast, also on a remote database)."""
+    if not rows:
+        return
+    rows = [_clean(r) for r in rows]
+    _QC.clear()
+    if PG:
+        from psycopg2.extras import execute_batch
+        pool = _pool(DBURL)
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                execute_batch(cur, _pg_sql(sql), rows, page_size=500)
+            conn.commit()
+            pool.putconn(conn)
+        except Exception:
+            conn.rollback()
+            pool.putconn(conn)
+            raise
+    else:
+        with sqlite3.connect(DB, timeout=30) as c:
+            c.execute("PRAGMA foreign_keys=ON")
+            c.executemany(sql, rows)
+            c.commit()
+
+
 def pw(p):
     return hashlib.sha256(("hrm$" + p).encode()).hexdigest()
 
@@ -325,6 +351,86 @@ def doc_pdf(title, hdr, sections, appr=()):
     return b.getvalue()
 
 
+BULK_SQL = ("INSERT INTO attendance(emp_id,day,status,hours,ot_hours,company_id,dept_id,sponsor_id) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(emp_id,day) DO UPDATE SET status=excluded.status,hours=excluded.hours,ot_hours=excluded.ot_hours")
+
+
+def bulk_places():
+    """{emp_id: [(day, from_c, from_d, from_s, to_c, to_d, to_s)]} - where each person worked on which date."""
+    t = q("SELECT emp_id, day, from_company, from_dept, from_sponsor, to_company, to_dept, to_sponsor FROM transfers ORDER BY day, id")
+    out = {}
+    for x in t.itertuples(index=False):
+        out.setdefault(int(x.emp_id), []).append((x.day, _id(x.from_company), _id(x.from_dept), _id(x.from_sponsor),
+                                                  _id(x.to_company), _id(x.to_dept), _id(x.to_sponsor)))
+    return out
+
+
+def place_on(tr, eid, ds, cur):
+    """(company, section, kofil) of this person on that date, from the transfer history."""
+    t = tr.get(eid)
+    if not t:
+        return cur
+    last = None
+    for x in t:
+        if x[0] <= ds:
+            last = x
+    return (last[4], last[5], last[6]) if last else (t[0][1], t[0][2], t[0][3])
+
+
+def bulk_build(e, d1, d2):
+    """Grid for the chosen staff and period: saved records are shown as they are; other working days start as P,
+    Fridays / special holidays / days after today start blank."""
+    days = [d1 + timedelta(k) for k in range((d2 - d1).days + 1)]
+    att = q("SELECT emp_id, day, status FROM attendance WHERE day BETWEEN ? AND ?", (str(d1), str(d2)))
+    ex = {(int(t.emp_id), t.day): CODE.get(t.status, "P") for t in att.itertuples(index=False)}
+    hol, tr, we = q("SELECT * FROM holidays"), bulk_places(), int(S("weekend"))
+    dn, do_ = float(S("def_normal")), float(S("def_ot"))
+    labs = [f"{d:%d} {d:%a}" for d in days]
+    rows = []
+    for r in e.itertuples(index=False):
+        cur = (_id(r.company_id), _id(r.dept_id), _id(r.sponsor_id))
+        rec = {"id": int(r.id), "Code": r.code, "Name": r.name, "Iqama ID": r.id_no or "", "Pay Type": r.pay_type,
+               "Company": r.company or "", "Section": r.section or "", "Sponsor": r.sponsor or "",
+               "Normal Hrs/day": dn, "OT Hrs/day": do_}
+        for d, lab in zip(days, labs):
+            ds = d.isoformat()
+            code = ex.get((int(r.id), ds))
+            if code is None:
+                off = d.weekday() == we or d > today() or hol_rate(hol, ds, *place_on(tr, int(r.id), ds, cur)) is not None
+                code = "" if off else "P"
+            rec[lab] = code
+        rows.append(rec)
+    return pd.DataFrame(rows), days, labs, set(ex), tr
+
+
+def bulk_rows(orig, ed, days, labs, ex_keys, tr, e):
+    """Records to write: new cells, and changed saved cells (untouched saved cells keep their own hours)."""
+    cur_by = {int(r.id): (_id(r.company_id), _id(r.dept_id), _id(r.sponsor_id)) for r in e.itertuples(index=False)}
+    out = []
+    for i in range(len(ed)):
+        er, orow = ed.iloc[i], orig.iloc[i]
+        eid = int(er["id"])
+        for d, lab in zip(days, labs):
+            new, old = er[lab], orow[lab]
+            if new is None or pd.isna(new) or new == "":
+                continue
+            ds = d.isoformat()
+            if (eid, ds) in ex_keys and new == old:
+                continue
+            pr = new == "P"
+            c_, s_, k_ = place_on(tr, eid, ds, cur_by[eid])
+            out.append((eid, ds, REV[new], float(er["Normal Hrs/day"]) if pr else 0.0,
+                        float(er["OT Hrs/day"]) if pr else 0.0, c_, s_, k_))
+    return out
+
+
+def _selcol():
+    try:
+        return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"], width="small")
+    except TypeError:
+        return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
+
+
 def init():
     for s in [
         "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)",
@@ -342,7 +448,7 @@ def init():
     ]:
         q(s, fetch=False)
     defaults = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "Yes"}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes"}
     for k, v in defaults.items():
         q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT DO NOTHING", (k, v), fetch=False)
     q("CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, name TEXT UNIQUE, vat TEXT)", fetch=False)
@@ -1159,16 +1265,17 @@ if "user" not in st.session_state:
                 st.error("Wrong recovery key")
     st.stop()
 role = st.session_state.role
-ALL = ["Dashboard", "Employees", "Transfer", "Setup", "Attendance", "Leave", "Adjustments", "Costs", "Payroll",
+ALL = ["Dashboard", "Employees", "Transfer", "Setup", "Attendance", "Bulk Attendance", "Leave", "Adjustments", "Costs", "Payroll",
        "Invoices", "Commission", "Reports", "Import", "Settings"]
-MENU = {"Admin": ALL + ["Users"], "HR": ALL, "Manager": ["Dashboard", "Attendance", "Leave", "Reports"]}[role]
+MENU = {"Admin": ALL + ["Users"], "HR": ALL, "Manager": ["Dashboard", "Attendance", "Bulk Attendance", "Leave", "Reports"]}[role]
+MENU = [m_ for m_ in MENU if m_ != "Bulk Attendance" or S("bulk_on") == "Yes"]
 st.sidebar.title(f"🏢 {S('company')}")
 st.sidebar.write(f"👤 {st.session_state.user} ({role})")
 if st.sidebar.button("Logout"):
     st.session_state.clear()
     st.rerun()
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
-        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Import": "📥", "Transfer": "🔁", "Commission": "💰", "Settings": "⚙️", "Users": "🔑"}
+        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Import": "📥", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
 st.sidebar.caption(f"Today: {today().strftime(S('date_fmt'))} ({S('timezone')})")
 
@@ -1561,6 +1668,59 @@ elif page == "Attendance":
                    float(r["OT Hrs"]) if pr_ else 0.0, ci.get(r.Company), si.get(r.Section), ki.get(r.Sponsor)), fetch=False)
             st.success("Saved")
 
+# ---------------- Bulk Attendance
+elif page == "Bulk Attendance":
+    st.header("Bulk attendance: many days in one entry")
+    st.caption("For when you do not enter attendance every day. Choose the period and Company / Section / Kofil, then change only "
+               "the exceptions (A, L, O). Working days start as P with the default hours (Settings); Fridays, special holidays "
+               "and days after today start blank. Saved records are shown as they are and are kept unless you change the cell. "
+               "A blank cell writes nothing. To delete a record use Attendance > Edit / Delete.")
+    cm, ds, sp = q("SELECT * FROM companies"), q("SELECT * FROM departments"), q("SELECT * FROM sponsors")
+    cl, sl, kl = cm.name.tolist(), ds.name.tolist(), sp.name.tolist()
+    c = st.columns([1, 1, 1.2, 1.2, 1.2])
+    d1 = dbox(c[0], "From", today().replace(day=1), "bk_a")
+    d2 = dbox(c[1], "To", today(), "bk_b")
+    with c[2]:
+        fco = msel("Company *", cl, "bk_co", False, "Select (required)")
+    with c[3]:
+        fsec = msel("Section *", sl, "bk_sec", False, "Select (required)")
+    with c[4]:
+        fspn = msel("Sponsor / Kofil *", kl, "bk_spn", False, "Select (required)")
+    qs = search_box("🔎 Search name / code / Iqama / passport", "bk_q")
+    if not (fco and fsec and fspn):
+        st.warning("Company, Section and Sponsor / Kofil are mandatory. Select them (or choose 'All') to open the grid.")
+    elif d2 < d1 or (d2 - d1).days > 61:
+        st.error("Choose a period of 1 to 62 days (From must not be after To).")
+    else:
+        e = apply_f(emp_df(), eff(fsec, sl), (), (), eff(fspn, kl), eff(fco, cl), qs)
+        if len(e) > 400:
+            st.warning(f"{len(e)} staff are too many for one grid (maximum 400). Narrow it with Company / Section / Kofil or the search box.")
+        elif e.empty:
+            st.info("No staff found.")
+        else:
+            orig, days, labs, exk, tr = bulk_build(e, d1, d2)
+            grid = orig.copy()
+            grid.insert(0, "S/L", range(1, len(grid) + 1))
+            ed = st.data_editor(grid, hide_index=True, use_container_width=True, key=f"bulk{d1}{d2}{fco}{fsec}{fspn}{qs}",
+                                disabled=["S/L", "id", "Code", "Name", "Iqama ID", "Pay Type", "Company", "Section", "Sponsor"],
+                                column_config={"id": None, **{lab: _selcol() for lab in labs}})
+            ed = ed.drop(columns=["S/L"])
+            tot = {f"{k} days": int((ed[labs] == k).sum().sum()) for k in "PALO"}
+            tbl(pd.DataFrame([{"TOTAL": f"TOTAL ({len(ed)} staff)", **tot}]), False)
+            rows = bulk_rows(orig, ed, days, labs, exk, tr, e)
+            n_new = sum(1 for r_ in rows if (r_[0], r_[1]) not in exk)
+            st.info(f"Ready to save: {n_new} new day records and {len(rows) - n_new} changed ones "
+                    f"({d1.strftime('%d/%m/%Y')} to {d2.strftime('%d/%m/%Y')}). Normal / OT hours per day come from the two "
+                    "columns on the left of the days (change them per person if different).")
+            if st.button("💾 Save bulk attendance", key="bk_save") and rows:
+                q_many(BULK_SQL, rows)
+                st.success(f"Saved {len(rows)} day records.")
+            sheet = ed.drop(columns=["id"]).copy()
+            for k in "PALO":
+                sheet[k] = (ed[labs] == k).sum(axis=1)
+            st.session_state["_monlab"] = f"Attendance {d1.strftime('%d/%m/%Y')} to {d2.strftime('%d/%m/%Y')}"
+            download(sheet, "bulk_attendance", hdr_of(str(d1), str(d2), eff(fsec, sl), (), (), eff(fspn, kl), eff(fco, cl)), "bk")
+
 # ---------------- Leave
 elif page == "Leave":
     st.header("Leave")
@@ -1918,9 +2078,10 @@ elif page == "Settings":
         iy = st.number_input("Basic increase: after every how many years of service", 0, 20, int(float(S("inc_years"))))
         ia = st.number_input("Basic increase: amount added to the monthly basic (0 = off)", 0.0, 100000.0, float(S("inc_amount")))
         ir = st.selectbox("Repeat the increase after every such period? (No = only once)", ["Yes", "No"], 0 if S("inc_repeat") == "Yes" else 1)
+        bk = st.selectbox("Show the Bulk Attendance menu (enter many days at once)", ["Yes", "No"], 0 if S("bulk_on") == "Yes" else 1)
         if st.form_submit_button("Save"):
             for k, v in dict(company=co, currency=cu, timezone=tz, std_hours=sh, work_days=wd,
-                             ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir).items():
+                             ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk).items():
                 q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
             st.success("Saved"); st.rerun()
     st.divider()
