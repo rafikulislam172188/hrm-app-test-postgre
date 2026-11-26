@@ -34,7 +34,7 @@ st.set_page_config(page_title="HRM", layout="wide")
 st.markdown("""<style>
 .stApp{background:#eef5ef;color:#1b2b22}
 .stApp h1,.stApp h2,.stApp h3{color:#1b2b22}
-[data-testid="stSidebar"]{background:#14472f;width:205px !important;min-width:205px !important}
+[data-testid="stSidebar"]{background:#14472f;width:205px !important;min-width:205px !important;z-index:1000000 !important}
 [data-testid="stSidebar"] > div:first-child{width:205px !important}
 [data-testid="stSidebar"] [data-testid="stSidebarUserContent"],[data-testid="stSidebar"] section{padding-left:.6rem;padding-right:.6rem}
 [data-testid="stSidebar"] *{color:#e8f5ec !important}
@@ -1306,8 +1306,9 @@ if page == "Dashboard":
     if S("marquee_on") == "Yes" and str(S("marquee_text")).strip():
       st.markdown(
         '<style>.mq{position:fixed;top:6px;left:0;right:170px;height:42px;overflow:hidden;white-space:nowrap;'
-        'z-index:999991;pointer-events:none}'
+        'z-index:999990;pointer-events:none}'
         'body:has([data-testid="stSidebar"][aria-expanded="true"]) .mq{left:215px}'
+        '.stApp:has([data-testid="stSidebar"][aria-expanded="true"]) .mq{left:215px}'
         '.mq span{display:inline-block;padding-left:100%;font-size:24px;line-height:42px;font-weight:800;color:#ff2e93;'
         'animation:mqmove 18s linear infinite}'
         '@keyframes mqmove{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}</style>'
