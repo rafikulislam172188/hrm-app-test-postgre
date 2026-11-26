@@ -405,7 +405,7 @@ def bulk_build(e, d1, d2, force=None):
     return pd.DataFrame(rows), days, labs, set(ex), tr
 
 
-def bulk_rows(orig, ed, days, labs, ex_keys, tr, e):
+def bulk_rows(orig, ed, days, labs, ex_keys, tr, e, rewrite_p=False):
     """Records to write: new cells, and changed saved cells (untouched saved cells keep their own hours)."""
     cur_by = {int(r.id): (_id(r.company_id), _id(r.dept_id), _id(r.sponsor_id)) for r in e.itertuples(index=False)}
     out = []
@@ -417,7 +417,7 @@ def bulk_rows(orig, ed, days, labs, ex_keys, tr, e):
             if new is None or pd.isna(new) or new == "":
                 continue
             ds = d.isoformat()
-            if (eid, ds) in ex_keys and new == old:
+            if (eid, ds) in ex_keys and new == old and not (rewrite_p and new == "P"):
                 continue
             pr = new == "P"
             c_, s_, k_ = place_on(tr, eid, ds, cur_by[eid])
@@ -1600,7 +1600,7 @@ elif page == "Attendance":
     cl, sl, kl = list(cn.values()), list(sn.values()), sp.name.tolist()
     kn = dict(zip(sp.id, sp.name))
     ki = {v: int(k) for k, v in kn.items()}
-    c = st.columns([1, 1.2, 1.2, 1.2, 1.2])
+    c = st.columns([1, 1.2, 1.2, 1.2, 1.1, 0.9, 0.9])
     day = dbox(c[0], "Date", today(), "att_d")
     with c[1]:
         fco = msel("Company *", cl, "att_co", False, "Select (required)")
@@ -1611,6 +1611,12 @@ elif page == "Attendance":
     with c[4]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         pick = st.selectbox("Set status for ALL", ["—"] + list(LBL.values()), key="att_st")
+    with c[5]:
+        st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
+        hn_pick = st.selectbox("Normal hrs for ALL", ["—", 8, 10, 12], key="att_hn", help="'—' = default from Settings")
+    with c[6]:
+        st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
+        ho_pick = st.selectbox("OT hrs for ALL", ["—", 0, 1, 2], key="att_ho", help="'—' = default from Settings")
     qs = search_box("🔎 Search name / code / Iqama / passport", "att_q")
     if not (fco and fsec and fspn):
         st.warning("Company, Section and Sponsor / Kofil are mandatory. Select them (or choose 'All') "
@@ -1633,6 +1639,9 @@ elif page == "Attendance":
             stt = pick[-1] if pick != "—" else (cur or ("O" if (wkend or is_h) else "P"))
             sv = cur == "P" and stt == "P"
             nh, oh = (float(g("hours", dn)), float(g("ot_hours", 0.0))) if sv else (dn, do_)
+            if stt == "P":
+                nh = float(hn_pick) if hn_pick != "—" else nh
+                oh = float(ho_pick) if ho_pick != "—" else oh
             rows.append({"id": r.id, "Code": r.code, "Name": r["name"], "Iqama ID": r.id_no or "",
                          "Passport No": r.passport_no or "", "Pay Type": r.pay_type, "Labour": r.labour_type,
                          "Sponsor": nm(g("sponsor_id", None), kn) or (r.sponsor or ""), "Company": nm(g("company_id", None), cn) or (r.company or ""),
@@ -1646,7 +1655,7 @@ elif page == "Attendance":
             st.info("Special holiday today for some of these staff: they start as O (no work, no pay). Mark P only for "
                     "those who worked - all their hours are paid at the holiday rate (or their OT rate).")
         ed = st.data_editor(pd.DataFrame(rows).pipe(lambda d: d.insert(0, "S/L", range(1, len(d) + 1)) or d), hide_index=True, use_container_width=True,
-                            key=f"att{day}{fco}{fsec}{fspn}{pick}{qs}",
+                            key=f"att{day}{fco}{fsec}{fspn}{pick}{hn_pick}{ho_pick}{qs}",
                             disabled=["S/L", "id", "Code", "Name", "Iqama ID", "Passport No", "Pay Type", "Labour", "Sponsor",
                                       "OT Rate", "Total Hrs"],
                             column_config={"id": None,
@@ -1691,7 +1700,7 @@ elif page == "Bulk Attendance":
                "A blank cell writes nothing. To delete a record use Attendance > Edit / Delete.")
     cm, ds, sp = q("SELECT * FROM companies"), q("SELECT * FROM departments"), q("SELECT * FROM sponsors")
     cl, sl, kl = cm.name.tolist(), ds.name.tolist(), sp.name.tolist()
-    c = st.columns([1, 1, 1.2, 1.2, 1.2, 1.2])
+    c = st.columns([1, 1, 1.2, 1.2, 1.2, 1.1, 0.9, 0.9])
     d1 = dbox(c[0], "From", today().replace(day=1), "bk_a")
     d2 = dbox(c[1], "To", today(), "bk_b")
     with c[2]:
@@ -1705,6 +1714,12 @@ elif page == "Bulk Attendance":
         bpick = st.selectbox("Set status for ALL", ["—", "P", "A", "L", "O"], key="bk_st",
                              help="Fills every cell in the grid with this status (Fridays / holidays too - those who work then are paid by the weekend / holiday rules). "
                                   "Then change single cells if needed.")
+    with c[6]:
+        st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
+        bhn = st.selectbox("Normal hrs for ALL", ["—", 8, 10, 12], key="bk_hn", help="'—' = default from Settings")
+    with c[7]:
+        st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
+        bho = st.selectbox("OT hrs for ALL", ["—", 0, 1, 2], key="bk_ho", help="'—' = default from Settings")
     qs = search_box("🔎 Search name / code / Iqama / passport", "bk_q")
     if not (fco and fsec and fspn):
         st.warning("Company, Section and Sponsor / Kofil are mandatory. Select them (or choose 'All') to open the grid.")
@@ -1724,13 +1739,17 @@ elif page == "Bulk Attendance":
             if bpick != "—":
                 grid[labs] = bpick      # shown / edited values; "orig" stays what is really saved, so saved cells that differ are rewritten
             grid.insert(0, "S/L", range(1, len(grid) + 1))
-            ed = st.data_editor(grid, hide_index=True, use_container_width=True, key=f"bulk{d1}{d2}{fco}{fsec}{fspn}{qs}{bpick}",
+            if bhn != "—":
+                grid["Normal Hrs/day"] = float(bhn)
+            if bho != "—":
+                grid["OT Hrs/day"] = float(bho)
+            ed = st.data_editor(grid, hide_index=True, use_container_width=True, key=f"bulk{d1}{d2}{fco}{fsec}{fspn}{qs}{bpick}{bhn}{bho}",
                                 disabled=["S/L", "id", "Code", "Name", "Iqama ID", "Pay Type", "Company", "Section", "Sponsor"],
                                 column_config={"id": None, **{lab: _selcol() for lab in labs}})
             ed = ed.drop(columns=["S/L"])
             tot = {f"{k} days": int((ed[labs] == k).sum().sum()) for k in "PALO"}
             tbl(pd.DataFrame([{"TOTAL": f"TOTAL ({len(ed)} staff)", **tot}]), False)
-            rows = bulk_rows(orig, ed, days, labs, exk, tr, e)
+            rows = bulk_rows(orig, ed, days, labs, exk, tr, e, bhn != "—" or bho != "—")
             n_new = sum(1 for r_ in rows if (r_[0], r_[1]) not in exk)
             if not rows:
                 st.warning(f"Nothing to save: {len(exk)} day records in this period are ALREADY saved and nothing was changed. "
