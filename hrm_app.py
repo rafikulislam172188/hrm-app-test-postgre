@@ -156,6 +156,20 @@ def _run(sql, p, fetch):
         c.commit()
 
 
+_RO = {"E": True, "D": True}   # write permission of the CURRENT menu page (set after the menu is chosen)
+
+
+def _guard(sql):
+    """Stop a write when this user has no Edit / Delete permission on the current menu."""
+    u = sql.lstrip().upper()
+    if "INTO SETTINGS" in u:
+        return
+    if (u.startswith(("INSERT", "UPDATE")) and not _RO["E"]) or (u.startswith("DELETE") and not _RO["D"]):
+        st.error("🔒 You do not have permission for this action on this menu (Edit / Delete is switched off for your user). "
+                 "Ask the Admin.")
+        st.stop()
+
+
 def q(sql, p=(), fetch=True):
     key = None
     if fetch:
@@ -167,6 +181,7 @@ def q(sql, p=(), fetch=True):
         if key is not None and key in _QC:
             return _QC[key].copy()
     else:
+        _guard(sql)
         _QC.clear()
     df = _run(sql, p, fetch)
     if fetch and key is not None:
@@ -178,6 +193,7 @@ def q_many(sql, rows):
     """One statement for many rows in ONE transaction (fast, also on a remote database)."""
     if not rows:
         return
+    _guard(sql)
     rows = [_clean(r) for r in rows]
     _QC.clear()
     if PG:
@@ -435,7 +451,7 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-26b"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-26d"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
                 "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION"}
 
@@ -469,7 +485,7 @@ def init():
         from_sponsor INT, to_company INT, to_dept INT, to_sponsor INT, note TEXT)""", fetch=False)
     for t_, c_ in [("employees", "id_expiry TEXT"), ("employees", "company_id INT"), ("employees", "food_allow REAL DEFAULT 0"),
                    ("employees", "ot_rate REAL DEFAULT 0"), ("employees", "bill_rate REAL DEFAULT 0"),
-                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT")]:
+                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT")]:
         try:
             q(f"ALTER TABLE {t_} ADD COLUMN {c_}", fetch=False)
         except Exception:
@@ -1284,6 +1300,20 @@ role = st.session_state.role
 ALL = ["Dashboard", "Employees", "Transfer", "Setup", "Attendance", "Bulk Attendance", "Leave", "Adjustments", "Costs", "Payroll",
        "Invoices", "Commission", "Reports", "Import", "Settings"]
 MENU = {"Admin": ALL + ["Users"], "HR": ALL, "Manager": ["Dashboard", "Attendance", "Bulk Attendance", "Leave", "Reports"]}[role]
+def parse_perms(v):
+    """'Attendance:VE|Leave:V' -> {'Attendance': 'VE', 'Leave': 'V'}  (V = show, E = edit, D = delete; no flags = role default)."""
+    out = {}
+    for part_ in str(v or "").split("|"):
+        if part_:
+            n_, sep_, f_ = part_.partition(":")
+            out[n_] = f_ if sep_ else None
+    return out
+
+
+_pm = q("SELECT perms FROM users WHERE username=?", (st.session_state.user,))
+_perm = parse_perms(_pm.perms[0]) if len(_pm) else {}
+if role != "Admin" and _perm:          # this user has his own menu list (set by Admin in Settings > User access)
+    MENU = [m_ for m_ in ALL if m_ in _perm] or ["Dashboard"]
 MENU = [m_ for m_ in MENU if m_ != "Bulk Attendance" or S("bulk_on") == "Yes"]
 st.sidebar.title(f"🏢 {S('company')}")
 st.sidebar.write(f"👤 {st.session_state.user} ({role})")
@@ -1293,6 +1323,13 @@ if st.sidebar.button("Logout"):
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
         "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Import": "📥", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
+_pf = _perm.get(page) if role != "Admin" else None
+if _pf is None:                         # no personal setting: the role decides (Admin / HR edit, Admin delete)
+    _CAN_E, _CAN_D = role in ("Admin", "HR"), role == "Admin"
+    _RO["E"] = _RO["D"] = True          # old behaviour: nothing is blocked
+else:                                   # personal setting for this menu
+    _CAN_E, _CAN_D = "E" in _pf, "D" in _pf
+    _RO["E"], _RO["D"] = _CAN_E, _CAN_D
 
 # ---------------- Dashboard
 @st.cache_data(ttl=600, show_spinner=False)
@@ -2142,6 +2179,44 @@ elif page == "Settings":
                              ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk, marquee_on=mon, marquee_text=mtx).items():
                 q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
             st.success("Saved"); st.rerun()
+    if role == "Admin":
+        st.divider()
+        st.subheader("User access (which menu each user can open)")
+        st.caption("Choose a user and tick the menus he may see in the navigation bar. A user with NO menus ticked uses the "
+                   "default of his role. Admin always sees everything. Create users in the Users menu.")
+        if st.session_state.get("ua_flash"):
+            st.success(st.session_state.pop("ua_flash"))
+        us_ = q("SELECT username, role, perms FROM users ORDER BY username")
+        us_ = us_[us_.role != "Admin"]
+        if us_.empty:
+            st.info("No HR / Manager users yet - create one in Users first.")
+        else:
+            ua = st.selectbox("User", us_.username.tolist(), key="ua_user")
+            cur_p = parse_perms(us_[us_.username == ua].perms.iloc[0])
+            ro_ = us_[us_.username == ua].role.iloc[0]
+            grid_ = pd.DataFrame({"Menu": ALL,
+                                  "Show": [m in cur_p for m in ALL],
+                                  "Edit": [(("E" in cur_p[m]) if cur_p.get(m) is not None else ro_ in ("Admin", "HR")) if m in cur_p else False for m in ALL],
+                                  "Delete": [(("D" in cur_p[m]) if cur_p.get(m) is not None else ro_ == "Admin") if m in cur_p else False for m in ALL]})
+            ed_ = st.data_editor(grid_, hide_index=True, use_container_width=True, disabled=["Menu"], key=f"ua_g_{ua}",
+                                 column_config={"Show": st.column_config.CheckboxColumn(help="Menu appears in the navigation bar"),
+                                                "Edit": st.column_config.CheckboxColumn(help="Can add / change data on this menu"),
+                                                "Delete": st.column_config.CheckboxColumn(help="Can delete data on this menu")})
+            ch = ["%s:V%s%s" % (r_.Menu, "E" if r_.Edit else "", "D" if r_.Delete else "")
+                  for r_ in ed_.itertuples(index=False) if r_.Show or r_.Edit or r_.Delete]
+            c = st.columns([1, 1, 4])
+            if c[0].button("💾 Save access", key="ua_save"):
+                q("UPDATE users SET perms=? WHERE username=?", ("|".join(ch), ua), fetch=False)
+                st.session_state["ua_flash"] = (f"Saved: {ua} can open {len(ch)} menus." if ch
+                                                else f"Saved: {ua} uses the default menus of his role.")
+                st.rerun()
+            if c[1].button("↺ Role default", key="ua_reset"):
+                q("UPDATE users SET perms=NULL WHERE username=?", (ua,), fetch=False)
+                st.rerun()
+            fmt_ = lambda v: ", ".join(f"{k_}{' [' + ('Edit ' if 'E' in (f_ or '') else '') + ('Delete' if 'D' in (f_ or '') else '') + ']' if f_ and len(f_) > 1 else (' [view]' if f_ else '')}".replace(" ]", "]")
+                                       for k_, f_ in parse_perms(v).items()) or "(role default)"
+            show = us_.assign(Menus=us_.perms.map(fmt_))
+            tbl(show[["username", "role", "Menus"]].rename(columns={"username": "User", "role": "Role"}), False)
     st.divider()
     st.subheader("Special holidays (Eid / special days)")
     st.caption("From the date you give, for the number of days you give. These days are left out of the month's working days "
@@ -2176,7 +2251,7 @@ CAN_DELETE = ("Admin",)         # roles that can delete (change here if you want
 def manage(table, sql, params=(), edit=(), fks=None, selects=None, hide=(), used_in=(), cascade=(), key="m",
            after_upd=None, before_del=None, guard=None, flt=None, cols=None, post=None):
     """Inline Edit + Delete grid for any table. `sql` must return `id` plus the columns to show."""
-    can_e, can_d = role in CAN_EDIT, role in CAN_DELETE
+    can_e, can_d = _CAN_E, _CAN_D
     if not (can_e or can_d):
         return
     if st.session_state.get("flash"):
@@ -2340,7 +2415,7 @@ def att_post(df):   # extra display columns for the attendance records grid
     return df.drop(columns=["_rate", "_otr", "_join"])
 
 
-if role in CAN_EDIT + CAN_DELETE and page in ("Commission", "Settings", "Employees", "Transfer", "Setup", "Attendance", "Leave", "Adjustments", "Costs", "Users"):
+if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Transfer", "Setup", "Attendance", "Leave", "Adjustments", "Costs", "Users"):
     st.divider()
     st.subheader("✏️ Edit / 🗑 Delete")
     st.caption("Choose Company / Section / Kofil (or All), change cells, then press Save. To delete: tick 'Delete', "
