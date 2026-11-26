@@ -454,9 +454,9 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-26e"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-26f"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12"}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12"}
 
 
 def init():
@@ -907,28 +907,70 @@ def _sign_block(width, appr):
 
 
 def _logo():
-    """(image, width, height, position) of the logo saved in Settings, or None."""
-    b64 = S("logo_b64")
-    if not b64:
+    """(image, icon width, height, position, info) - logo picture + the three text lines from Settings, or None."""
+    t = [str(S(k) or "").strip() for k in ("logo_t1", "logo_t2", "logo_t3")]
+    ir, iw_ = None, 0.0
+    lh = float(S("logo_h") or 40)
+    if S("logo_b64"):
+        try:
+            import base64
+            from reportlab.lib.utils import ImageReader
+            ir = ImageReader(io.BytesIO(base64.b64decode(S("logo_b64"))))
+            w0, h0 = ir.getSize()
+            iw_ = lh * w0 / h0
+        except Exception:
+            ir = None
+    if ir is None and not any(t):
         return None
-    try:
-        import base64
-        from reportlab.lib.utils import ImageReader
-        ir = ImageReader(io.BytesIO(base64.b64decode(b64)))
-        iw, ih = ir.getSize()
-        lh = float(S("logo_h") or 40)
-        return ir, lh * iw / ih, lh, S("logo_pos")
-    except Exception:
-        return None
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    s1, s2, s3 = lh * 0.17, lh * 0.25, lh * 0.15
+    pad = lh * 0.12
+    wd = [stringWidth(t[0], "Helvetica-Bold", s1) + 2 * pad if t[0] else 0,
+          stringWidth(t[1], "Helvetica-Bold", s2) if t[1] else 0, stringWidth(t[2], "Helvetica", s3) if t[2] else 0]
+    tw = max(wd)
+    gap = lh * 0.22 if (ir is not None and tw) else 0
+    return ir, iw_, lh, S("logo_pos"), dict(t=t, sz=(s1, s2, s3), pad=pad, tw=tw, gap=gap, total=iw_ + gap + tw)
 
 
 def _draw_logo(c, W, H, m, lg):
-    """Logo on the top row of every page: left / centre / right as chosen in Settings."""
+    """Logo (picture + your text lines) on the top row of every page: left / centre / right as chosen in Settings."""
     if not lg:
         return
-    ir, w, h, pos = lg
-    x = m if pos == "Left" else (W - m - w if pos == "Right" else (W - w) / 2)
-    c.drawImage(ir, x, H - m - h, w, h, mask="auto")
+    ir, iw_, h, pos, f = lg
+    x0 = m if pos == "Left" else (W - m - f["total"] if pos == "Right" else (W - f["total"]) / 2)
+    top = H - m
+    c.saveState()
+    if ir is not None:
+        c.drawImage(ir, x0, top - h, iw_, h, mask="auto")
+    t, (s1, s2, s3), tw = f["t"], f["sz"], f["tw"]
+    if any(t):
+        x = x0 + iw_ + f["gap"]
+        hb, hm, ht = s1 * 1.75, s2 * 1.2, s3 * 1.3
+        th = (hb + 2 if t[0] else 0) + (hm + 2 if t[1] else 0) + (3 if t[1] and t[2] else 0) + (ht if t[2] else 0)
+        y = top - max((h - th) / 2, 0)
+        if t[0]:
+            bw = f["tw"] if False else c.stringWidth(t[0], "Helvetica-Bold", s1) + 2 * f["pad"]
+            c.setFillColorRGB(0.878, 0.078, 0.478)
+            c.roundRect(x, y - hb, bw, hb, hb / 2, stroke=0, fill=1)
+            c.setFillColorRGB(1, 1, 1)
+            c.setFont("Helvetica-Bold", s1)
+            c.drawString(x + f["pad"], y - hb + (hb - s1) / 2 + s1 * 0.12, t[0])
+            y -= hb + 2
+        if t[1]:
+            c.setFillColorRGB(0.055, 0.231, 0.161)
+            c.setFont("Helvetica-Bold", s2)
+            c.drawString(x, y - s2 * 0.95, t[1])
+            y -= hm + 2
+        if t[1] and t[2]:
+            c.setStrokeColorRGB(0.96, 0.64, 0)
+            c.setLineWidth(1)
+            c.line(x, y + 1, x + tw, y + 1)
+            y -= 3
+        if t[2]:
+            c.setFillColorRGB(0.29, 0.416, 0.357)
+            c.setFont("Helvetica", s3)
+            c.drawString(x, y - s3 * 0.95, t[2])
+    c.restoreState()
 
 
 def _pdf_fit(data, W, H, m, top, fs_max=8.0, check_h=True, bottom=None, fonts=("Helvetica", "Helvetica-Bold"), fixed=False,
@@ -2287,6 +2329,10 @@ elif page == "Settings":
     lpos = lc[1].selectbox("Logo position on the page header", ["Left", "Center", "Right"],
                            ["Left", "Center", "Right"].index(S("logo_pos")) if S("logo_pos") in ("Left", "Center", "Right") else 0)
     lhh = lc[2].number_input("Logo height (pt)", 15, 120, int(float(S("logo_h") or 40)), 5)
+    tc = st.columns(3)
+    lt1 = tc[0].text_input("Logo text 1 (pink badge) - leave empty = not shown", S("logo_t1"))
+    lt2 = tc[1].text_input("Logo text 2 (main line) - leave empty = not shown", S("logo_t2"))
+    lt3 = tc[2].text_input("Logo text 3 (small line) - leave empty = not shown", S("logo_t3"))
     cc = st.columns(5)
     hbg = cc[0].color_picker("Header row colour", S("pdf_head_bg"))
     hfg = cc[1].color_picker("Header text colour", S("pdf_head_fg"))
@@ -2311,7 +2357,7 @@ elif page == "Settings":
             new_logo = base64.b64encode(raw_).decode() if len(raw_) < 600000 else ""
             if not new_logo:
                 st.error("The logo file is too big - use a smaller picture.")
-        for k, v in dict(logo_b64=new_logo, logo_pos=lpos, logo_h=lhh, prepared_by=prb, pdf_head_bg=hbg, pdf_head_fg=hfg,
+        for k, v in dict(logo_b64=new_logo, logo_t1=lt1, logo_t2=lt2, logo_t3=lt3, logo_pos=lpos, logo_h=lhh, prepared_by=prb, pdf_head_bg=hbg, pdf_head_fg=hfg,
                          pdf_tot_bg=tbg, pdf_tot_fg=tfg).items():
             q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
         st.success("Saved - all new prints use it."); st.rerun()
