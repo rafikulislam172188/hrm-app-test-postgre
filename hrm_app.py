@@ -1312,7 +1312,8 @@ def parse_perms(v):
 
 _pm = q("SELECT perms FROM users WHERE username=?", (st.session_state.user,))
 _perm = parse_perms(_pm.perms[0]) if len(_pm) else {}
-if role != "Admin" and _perm:          # this user has his own menu list (set by Admin in Settings > User access)
+_restricted = st.session_state.user != "admin" and bool(_perm)     # the main 'admin' can never be locked out
+if _restricted:          # this user has his own menu list (set by Admin in Settings > User access)
     MENU = [m_ for m_ in ALL if m_ in _perm] or ["Dashboard"]
 MENU = [m_ for m_ in MENU if m_ != "Bulk Attendance" or S("bulk_on") == "Yes"]
 st.sidebar.title(f"🏢 {S('company')}")
@@ -1323,7 +1324,7 @@ if st.sidebar.button("Logout"):
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
         "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Import": "📥", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
-_pf = _perm.get(page) if role != "Admin" else None
+_pf = _perm.get(page) if _restricted else None
 if _pf is None:                         # no personal setting: the role decides (Admin / HR edit, Admin delete)
     _CAN_E, _CAN_D = role in ("Admin", "HR"), role == "Admin"
     _RO["E"] = _RO["D"] = True          # old behaviour: nothing is blocked
@@ -2179,11 +2180,11 @@ elif page == "Settings":
                              ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk, marquee_on=mon, marquee_text=mtx).items():
                 q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
             st.success("Saved"); st.rerun()
-    if role == "Admin":
+    if role == "Admin" and not _restricted:
         st.divider()
         st.subheader("User access (which menu each user can open)")
         st.caption("Choose a user and tick the menus he may see in the navigation bar. A user with NO menus ticked uses the "
-                   "default of his role. Admin always sees everything. Create users in the Users menu.")
+                   "default of his role. The main user 'admin' always sees everything. Any other user (even with role Admin) can be limited here.")
         if st.session_state.get("ua_flash"):
             st.success(st.session_state.pop("ua_flash"))
         with st.expander("➕ Add a new user (any number of users)"):
@@ -2197,9 +2198,9 @@ elif page == "Settings":
                     st.session_state["ua_flash"] = f"User '{nu.strip()}' saved. Now choose him below and give his menu access."
                     st.rerun()
         us_ = q("SELECT username, role, perms FROM users ORDER BY username")
-        us_ = us_[us_.role != "Admin"]
+        us_ = us_[(us_.username != "admin") & (us_.username != st.session_state.user)]
         if us_.empty:
-            st.info("No HR / Manager users yet - create one in Users first.")
+            st.info("No other users yet - add one with 'Add a new user' above.")
         else:
             ua = st.selectbox("User", us_.username.tolist(), key="ua_user")
             cur_p = parse_perms(us_[us_.username == ua].perms.iloc[0])
