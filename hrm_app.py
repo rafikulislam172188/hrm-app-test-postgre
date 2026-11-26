@@ -1438,7 +1438,7 @@ if "user" not in st.session_state:
     st.stop()
 role = st.session_state.role
 ALL = ["Dashboard", "Employees", "Transfer", "Setup", "Attendance", "Bulk Attendance", "Leave", "Adjustments", "Costs", "Payroll",
-       "Invoices", "Commission", "Reports", "Import", "Settings"]
+       "Invoices", "Commission", "Reports", "Settings"]
 MENU = {"Admin": ALL + ["Users"], "HR": ALL, "Manager": ["Dashboard", "Attendance", "Bulk Attendance", "Leave", "Reports"]}[role]
 def parse_perms(v):
     """'Attendance:VE|Leave:V' -> {'Attendance': 'VE', 'Leave': 'V'}  (V = show, E = edit, D = delete; no flags = role default)."""
@@ -1462,7 +1462,7 @@ if st.sidebar.button("Logout"):
     st.session_state.clear()
     st.rerun()
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
-        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Import": "📥", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
+        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
 _pf = _perm.get(page) if _restricted else None
 if _pf is None:                         # no personal setting: the role decides (Admin / HR edit, Admin delete)
@@ -1473,6 +1473,45 @@ else:                                   # personal setting for this menu
     _RO["E"], _RO["D"] = _CAN_E, _CAN_D
 
 # ---------------- Dashboard
+def _import_employees():
+    """Bulk import of employees (Excel / CSV) - shown inside the Employees menu."""
+    T = ["Code", "Name", "Nationality", "ID No", "Passport No", "Phone", "Company", "Section", "Sponsor", "Labour Type", "Pay Type",
+         "Pay Mode", "Rate", "Food Allow", "Special Allow", "Other Allow", "OT Rate", "Bill Rate", "Join Date", "ID Expiry"]
+    st.download_button("⬇ Download template", pd.DataFrame(columns=T).to_csv(index=False), "employee_template.csv")
+    st.caption("Labour Type: Company / Outside. Pay Type: Monthly / Hourly. Pay Mode: Bank / Cash. "
+               "Companies, sections and sponsors are created automatically. Same Code = update.")
+    up = st.file_uploader("Upload .xlsx or .csv", type=["xlsx", "csv"])
+    if up is not None:
+        df = pd.read_csv(up, dtype=str) if up.name.endswith(".csv") else pd.read_excel(up, dtype=str)
+        st.dataframe(df.head(20), use_container_width=True)
+        if st.button("Import now"):
+            txt = lambda v: "" if pd.isna(v) else str(v).strip()
+            num = lambda v: 0.0 if pd.isna(pd.to_numeric(v, errors="coerce")) else float(v)
+            dt = lambda v: "" if pd.isna(pd.to_datetime(v, errors="coerce")) else str(pd.to_datetime(v).date())
+
+            def idof(tbl, v):
+                v = txt(v)
+                if not v:
+                    return None
+                q(f"INSERT INTO {tbl}(name) VALUES(?) ON CONFLICT DO NOTHING", (v,), fetch=False)
+                return int(q(f"SELECT id FROM {tbl} WHERE name=?", (v,)).id[0])
+
+            n = 0
+            for _, r in df.iterrows():
+                if not txt(r.get("Code")):
+                    continue
+                save_emp(dict(code=txt(r.get("Code")), name=txt(r.get("Name")), nationality=txt(r.get("Nationality")),
+                              id_no=txt(r.get("ID No")), passport_no=txt(r.get("Passport No")), phone=txt(r.get("Phone")), company_id=idof("companies", r.get("Company")),
+                              dept_id=idof("departments", r.get("Section")), sponsor_id=idof("sponsors", r.get("Sponsor")),
+                              labour_type=txt(r.get("Labour Type")) or "Company", pay_type=txt(r.get("Pay Type")) or "Monthly",
+                              pay_mode=txt(r.get("Pay Mode")) or "Bank", rate=num(r.get("Rate")),
+                              food_allow=num(r.get("Food Allow")), special_allow=num(r.get("Special Allow")), other_allow=num(r.get("Other Allow")), ot_rate=num(r.get("OT Rate")),
+                              bill_rate=num(r.get("Bill Rate")), join_date=dt(r.get("Join Date")) or str(today()),
+                              id_expiry=dt(r.get("ID Expiry"))))
+                n += 1
+            st.success(f"Imported / updated {n} employees")
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def _net_month(d1, d2):
     """Net payroll of one month (kept 10 minutes so the Dashboard opens fast)."""
@@ -1600,6 +1639,8 @@ elif page == "Employees":
                           join_date=str(jd), id_expiry=str(exp)))
             st.session_state["empv"], st.session_state["flash_emp"] = v + 1, f"Saved {code}"
             st.rerun()
+    with st.expander("📥 Bulk import employees (Excel / CSV)"):
+        _import_employees()
     showall = st.checkbox("Show deactivated employees too", key="emp_all")
     f = filters("emp")
     df = apply_f(emp_df(None if showall else True), *f[2:]).drop(columns=["id", "company_id", "dept_id", "sponsor_id"])
@@ -2130,44 +2171,6 @@ elif page == "Invoices":
         st.info("No attendance in this period.")
 
 # ---------------- Import
-elif page == "Import":
-    st.header("Bulk import employees (Excel / CSV)")
-    T = ["Code", "Name", "Nationality", "ID No", "Passport No", "Phone", "Company", "Section", "Sponsor", "Labour Type", "Pay Type",
-         "Pay Mode", "Rate", "Food Allow", "Special Allow", "Other Allow", "OT Rate", "Bill Rate", "Join Date", "ID Expiry"]
-    st.download_button("⬇ Download template", pd.DataFrame(columns=T).to_csv(index=False), "employee_template.csv")
-    st.caption("Labour Type: Company / Outside. Pay Type: Monthly / Hourly. Pay Mode: Bank / Cash. "
-               "Companies, sections and sponsors are created automatically. Same Code = update.")
-    up = st.file_uploader("Upload .xlsx or .csv", type=["xlsx", "csv"])
-    if up is not None:
-        df = pd.read_csv(up, dtype=str) if up.name.endswith(".csv") else pd.read_excel(up, dtype=str)
-        st.dataframe(df.head(20), use_container_width=True)
-        if st.button("Import now"):
-            txt = lambda v: "" if pd.isna(v) else str(v).strip()
-            num = lambda v: 0.0 if pd.isna(pd.to_numeric(v, errors="coerce")) else float(v)
-            dt = lambda v: "" if pd.isna(pd.to_datetime(v, errors="coerce")) else str(pd.to_datetime(v).date())
-
-            def idof(tbl, v):
-                v = txt(v)
-                if not v:
-                    return None
-                q(f"INSERT INTO {tbl}(name) VALUES(?) ON CONFLICT DO NOTHING", (v,), fetch=False)
-                return int(q(f"SELECT id FROM {tbl} WHERE name=?", (v,)).id[0])
-
-            n = 0
-            for _, r in df.iterrows():
-                if not txt(r.get("Code")):
-                    continue
-                save_emp(dict(code=txt(r.get("Code")), name=txt(r.get("Name")), nationality=txt(r.get("Nationality")),
-                              id_no=txt(r.get("ID No")), passport_no=txt(r.get("Passport No")), phone=txt(r.get("Phone")), company_id=idof("companies", r.get("Company")),
-                              dept_id=idof("departments", r.get("Section")), sponsor_id=idof("sponsors", r.get("Sponsor")),
-                              labour_type=txt(r.get("Labour Type")) or "Company", pay_type=txt(r.get("Pay Type")) or "Monthly",
-                              pay_mode=txt(r.get("Pay Mode")) or "Bank", rate=num(r.get("Rate")),
-                              food_allow=num(r.get("Food Allow")), special_allow=num(r.get("Special Allow")), other_allow=num(r.get("Other Allow")), ot_rate=num(r.get("OT Rate")),
-                              bill_rate=num(r.get("Bill Rate")), join_date=dt(r.get("Join Date")) or str(today()),
-                              id_expiry=dt(r.get("ID Expiry"))))
-                n += 1
-            st.success(f"Imported / updated {n} employees")
-
 # ---------------- Reports
 elif page == "Reports":
     st.header("Reports ")
