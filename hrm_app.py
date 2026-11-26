@@ -1141,6 +1141,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
                     basic += (sum(rt(x[0]) for x in p_) + sum(rt(x[0]) for x in l_)) / wdm
                     basic += rate_m * ab * (1 / wdm - 1 / nd)   # an absent day's basic is cut at basic / days-of-month, not / working days
                     food += r.food_allow / wdm * (paid + nwk)
+                    food += r.food_allow * ab * (1 / wdm - 1 / nd)   # absent day: food cut = food / days-of-month
                     if pall.get(mth):
                         spa += r.special_allow * paid / pall[mth]    # fixed amount, shared by days worked at each place
                     elif mth not in spa_used:
