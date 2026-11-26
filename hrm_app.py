@@ -433,9 +433,9 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-26a"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-26b"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes"}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION"}
 
 
 def init():
@@ -1301,12 +1301,13 @@ def _net_month(d1, d2):
 
 
 if page == "Dashboard":
-    st.markdown(
+    if S("marquee_on") == "Yes" and str(S("marquee_text")).strip():
+      st.markdown(
         '<style>.mq{overflow:hidden;white-space:nowrap;background:#fff;border-radius:12px;padding:8px 0;margin-bottom:10px}'
         '.mq span{display:inline-block;padding-left:100%;font-size:26px;font-weight:800;color:#ff2e93;'
         'animation:mqmove 18s linear infinite}'
         '@keyframes mqmove{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}</style>'
-        f'<div class="mq"><span>{html.escape(str(S("company")))}</span></div>', unsafe_allow_html=True)
+        f'<div class="mq"><span>{html.escape(str(S("marquee_text")))}</span></div>', unsafe_allow_html=True)
     st.header("Dashboard")
     e = emp_df()
     t = str(today())
@@ -2128,9 +2129,12 @@ elif page == "Settings":
         ia = st.number_input("Basic increase: amount added to the monthly basic (0 = off)", 0.0, 100000.0, float(S("inc_amount")))
         ir = st.selectbox("Repeat the increase after every such period? (No = only once)", ["Yes", "No"], 0 if S("inc_repeat") == "Yes" else 1)
         bk = st.selectbox("Show the Bulk Attendance menu (enter many days at once)", ["Yes", "No"], 0 if S("bulk_on") == "Yes" else 1)
+        c = st.columns(2)
+        mon = c[0].selectbox("Dashboard scrolling text (ON / OFF)", ["Yes", "No"], 0 if S("marquee_on") == "Yes" else 1)
+        mtx = c[1].text_input("Dashboard scrolling text", S("marquee_text"))
         if st.form_submit_button("Save"):
             for k, v in dict(company=co, currency=cu, timezone=tz, std_hours=sh, work_days=wd,
-                             ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk).items():
+                             ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk, marquee_on=mon, marquee_text=mtx).items():
                 q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
             st.success("Saved"); st.rerun()
     st.divider()
