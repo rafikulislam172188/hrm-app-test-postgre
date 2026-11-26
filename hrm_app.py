@@ -516,7 +516,12 @@ def S(k):
           (k, v), fetch=False)
         return v
     return str(df.iloc[0, 0])
-
+    
+def today():
+    if PG:
+        tz = ZoneInfo(S("timezone"))
+        return datetime.now(tz).date()
+    return date.today()
 
 def emp_df(active=True):
     return q("""SELECT e.id, e.code, e.name, c.name AS company, d.name AS section, s.name AS sponsor, e.labour_type,
