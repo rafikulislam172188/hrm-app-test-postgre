@@ -1303,8 +1303,9 @@ def _net_month(d1, d2):
 if page == "Dashboard":
     if S("marquee_on") == "Yes" and str(S("marquee_text")).strip():
       st.markdown(
-        '<style>.mq{overflow:hidden;white-space:nowrap;background:#fff;border-radius:12px;padding:8px 0;margin-bottom:10px}'
-        '.mq span{display:inline-block;padding-left:100%;font-size:26px;font-weight:800;color:#ff2e93;'
+        '<style>.mq{position:fixed;top:6px;left:0;right:170px;height:42px;overflow:hidden;white-space:nowrap;'
+        'z-index:999991;pointer-events:none}'
+        '.mq span{display:inline-block;padding-left:100%;font-size:24px;line-height:42px;font-weight:800;color:#ff2e93;'
         'animation:mqmove 18s linear infinite}'
         '@keyframes mqmove{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}</style>'
         f'<div class="mq"><span>{html.escape(str(S("marquee_text")))}</span></div>', unsafe_allow_html=True)
