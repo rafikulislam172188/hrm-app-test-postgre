@@ -53,7 +53,7 @@ st.markdown("""<style>
 .av{width:36px;height:36px;border-radius:50%;background:#2e7d4f;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600}
 .badge{margin-left:auto;background:#e3f4e8;color:#2e7d4f;padding:2px 12px;border-radius:8px;font-size:12px}
 .bars{display:flex;align-items:flex-end;gap:12px;height:130px;margin-top:8px}
-.bars div{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;font-size:11px;color:#6b7c72}
+.bars div{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;font-size:11px;font-weight:700;color:#ff2e93}
 .bars span{width:70%;background:#2e7d4f;border-radius:4px 4px 0 0;display:block}
 [data-baseweb="select"]>div{background:#eaf5ee;border:1.5px solid #2e7d4f}
 [data-baseweb="tag"]{background-color:#2e7d4f !important;color:#fff !important}
@@ -1355,7 +1355,7 @@ if page == "Dashboard":
         e0 = (s0.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
         vals.append((s0.strftime("%b %y"), _net_month(str(s0), str(e0))))
     mx = max(v for _, v in vals) or 1
-    bars = "".join(f'<div><small style="font-size:10px;white-space:nowrap">{v:,.0f}</small><span style="height:{v / mx * 70:.0f}%"></span>{l}</div>'
+    bars = "".join(f'<div><small style="font-size:10px;font-weight:700;color:#ff2e93;white-space:nowrap">{v:,.0f}</small><span style="height:{v / mx * 70:.0f}%"></span>{l}</div>'
                    for l, v in vals)
     st.markdown(f'<div class="card"><div class="ttl">Monthly Payroll Summary (last 12 months)</div>'
                 f'<small>Net payroll this month</small>'
