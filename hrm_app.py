@@ -361,11 +361,14 @@ def doc_pdf(title, hdr, sections, appr=()):
         data = [[str(c) for c in d.columns]] + [["" if pd.isna(v) else (f"{v:,.2f}" if isinstance(v, float) else str(v))[:34]
                                                   for v in row] for row in d.itertuples(index=False)]
         t = Table(data, repeatRows=1)
-        t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 8), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#14472f")),
-                               ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.25, colors.grey)]))
+        t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 8), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(S("pdf_head_bg"))),
+                               ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(S("pdf_head_fg"))), ("GRID", (0, 0), (-1, -1), 0.25, colors.grey)]))
         els += [Paragraph(f"<b>{h}</b>", sty["Heading4"]), t, Spacer(1, 10)]
-    foot = lambda c, d: _draw_approved(c, landscape(A4)[0], appr, 24)
-    SimpleDocTemplate(b, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=62 if appr else 24).build(els, onFirstPage=foot, onLaterPages=foot)
+    lg = _logo()
+    foot = lambda c, d: _draw_logo(c, landscape(A4)[0], landscape(A4)[1], 24, lg)
+    els += [_sign_block(landscape(A4)[0] - 48, appr)]
+    SimpleDocTemplate(b, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24 + (lg[2] + 4 if lg else 0),
+                      bottomMargin=24).build(els, onFirstPage=foot, onLaterPages=foot)
     return b.getvalue()
 
 
@@ -451,9 +454,9 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-26d"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-26e"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION"}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12"}
 
 
 def init():
@@ -825,18 +828,62 @@ def approvers(hdr, df):
 
 
 def _draw_approved(c, W, appr, m):
-    """'Approved by' + name, bottom right of the page."""
-    if not appr:
+    """(old bottom-right stamp - not used any more; the signature block now sits right under the TOTAL row)"""
+    return
+
+
+def _sign_block(width, appr):
+    """'Prepared by' (left) and 'Approved by' + kofil approver name (right), right under the last row of the table."""
+    from reportlab.platypus import Flowable
+    prep = str(S("prepared_by") or "")
+
+    class _Sign(Flowable):
+        def __init__(self):
+            super().__init__()
+            self.width, self.height = width, 34
+
+        def wrap(self, aw, ah):
+            return self.width, self.height
+
+        def draw(self):
+            c, h = self.canv, self.height
+            c.setFont("Helvetica", 8)
+            c.drawString(0, h - 9, "Prepared by")
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(0, h - 24, prep)
+            x = self.width
+            for spn_, name in appr:
+                c.setFont("Helvetica", 8)
+                c.drawRightString(x, h - 9, "Approved by" + (f"  ({spn_})" if len(appr) > 1 else ""))
+                c.setFont("Helvetica-Bold", 11)
+                c.drawRightString(x, h - 24, name)
+                x -= 190
+    return _Sign()
+
+
+def _logo():
+    """(image, width, height, position) of the logo saved in Settings, or None."""
+    b64 = S("logo_b64")
+    if not b64:
+        return None
+    try:
+        import base64
+        from reportlab.lib.utils import ImageReader
+        ir = ImageReader(io.BytesIO(base64.b64decode(b64)))
+        iw, ih = ir.getSize()
+        lh = float(S("logo_h") or 40)
+        return ir, lh * iw / ih, lh, S("logo_pos")
+    except Exception:
+        return None
+
+
+def _draw_logo(c, W, H, m, lg):
+    """Logo on the top row of every page: left / centre / right as chosen in Settings."""
+    if not lg:
         return
-    c.saveState()
-    x = W - m
-    for spn_, name in appr:
-        c.setFont("Helvetica", 8)
-        c.drawRightString(x, m + 20, "Approved by" + (f"  ({spn_})" if len(appr) > 1 else ""))
-        c.setFont("Helvetica-Bold", 11)
-        c.drawRightString(x, m + 6, name)
-        x -= 190
-    c.restoreState()
+    ir, w, h, pos = lg
+    x = m if pos == "Left" else (W - m - w if pos == "Right" else (W - w) / 2)
+    c.drawImage(ir, x, H - m - h, w, h, mask="auto")
 
 
 def _pdf_fit(data, W, H, m, top, fs_max=8.0, check_h=True, bottom=None, fonts=("Helvetica", "Helvetica-Bold"), fixed=False,
@@ -874,13 +921,13 @@ def _pdf_clip(data, wid, fs, fonts=("Helvetica", "Helvetica-Bold"), bold_last=Fa
 def _pdf_style(fs, istot, rowpad=1.5, fonts=("Helvetica", "Helvetica-Bold")):
     from reportlab.lib import colors
     st_ = [("FONTSIZE", (0, 0), (-1, -1), fs), ("FONTNAME", (0, 0), (-1, -1), fonts[0]), ("FONTNAME", (0, 0), (-1, 0), fonts[1]),
-           ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#14472f")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-           ("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+           ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(S("pdf_head_bg"))), ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(S("pdf_head_fg"))),
+           ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#9aa5a0")), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
            ("TOPPADDING", (0, 0), (-1, -1), rowpad), ("BOTTOMPADDING", (0, 0), (-1, -1), rowpad),
            ("LEFTPADDING", (0, 0), (-1, -1), 2), ("RIGHTPADDING", (0, 0), (-1, -1), 2)]
     if istot:   # TOTAL row: bold, coloured, thicker line above
-        st_ += [("FONTNAME", (0, -1), (-1, -1), fonts[1]), ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#fde68a")),
-                ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor("#7c2d12")), ("LINEABOVE", (0, -1), (-1, -1), 1.2, colors.HexColor("#7c2d12"))]
+        st_ += [("FONTNAME", (0, -1), (-1, -1), fonts[1]), ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor(S("pdf_tot_bg"))),
+                ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor(S("pdf_tot_fg"))), ("LINEABOVE", (0, -1), (-1, -1), 1.0, colors.HexColor(S("pdf_tot_fg")))]
     return st_
 
 
@@ -898,22 +945,24 @@ def df_pdf(df, title, hdr=""):
     data = _pdf_data(df)
     istot = len(data) > 1 and any(c.startswith("TOTAL") for c in data[-1])
     appr, m = getattr(hdr, "appr", []), 16
-    bottom = m + 38 if appr else m
+    bottom = m + 46                       # room kept for the Prepared by / Approved by line under the table
+    lg = _logo()
+    off = lg[2] + 4 if lg else 0
     fonts = _fonts()
     for ps in ([landscape(A4)] if len(df.columns) <= 14 else []) + [landscape(A3)]:
-        fs, wid = _pdf_fit(data, ps[0], ps[1], m, 88, bottom=bottom, fonts=fonts, bold_last=istot)
+        fs, wid = _pdf_fit(data, ps[0], ps[1], m, 88 + off, bottom=bottom, fonts=fonts, bold_last=istot)
         if fs >= 6:
             break
     t = Table(_pdf_clip(data, wid, fs, fonts, istot), colWidths=wid, repeatRows=1)
     t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts)))
     sty = getSampleStyleSheet()
     sm = ParagraphStyle("sm", parent=sty["Normal"], fontSize=8, leading=10)
-    foot = lambda c, d: _draw_approved(c, ps[0], appr, m)
+    foot = lambda c, d: _draw_logo(c, ps[0], ps[1], m, lg)
     b = io.BytesIO()
-    SimpleDocTemplate(b, pagesize=ps, leftMargin=m, rightMargin=m, topMargin=m, bottomMargin=bottom).build([
+    SimpleDocTemplate(b, pagesize=ps, leftMargin=m, rightMargin=m, topMargin=m + off, bottomMargin=m).build([
         Paragraph(f"<b>{S('company')} - {title}</b>", ParagraphStyle("h", parent=sty["Title"], fontSize=14, leading=16, spaceAfter=2)),
         Paragraph(str(hdr), sm), Paragraph(f"Printed {dmy(today())}  |  {len(df) - (1 if istot else 0)} rows", sm),
-        Spacer(1, 4), t], onFirstPage=foot, onLaterPages=foot)
+        Spacer(1, 4), t, Spacer(1, 8), _sign_block(sum(wid), appr)], onFirstPage=foot, onLaterPages=foot)
     return b.getvalue()
 
 
@@ -931,7 +980,10 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
         data[-1][i0] = "TOTAL" if data[-1][i0] == "" else "TOTAL " + data[-1][i0]
     W, H = landscape(A3 if paper == "A3" else A4)
     appr, m, top = getattr(hdr, "appr", []), 18, 96
-    bottom = m + 38 if appr else m
+    lg = _logo()
+    off = lg[2] + 9 if lg else 0
+    top += off
+    bottom = m + 46                       # room kept for the Prepared by / Approved by line under the table
     fonts = _fonts(family, style)
     if fit:
         rowh = max(8, min(rowh, (H - top - bottom) / len(data)))
@@ -944,7 +996,8 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
 
     def head(c, doc):
         c.saveState()
-        y = H - 26
+        _draw_logo(c, W, H, m, lg)
+        y = H - 26 - off
         for txt, fn, sz in lines:
             while sz > 7 and stringWidth(txt, fn, sz) > W - 360:
                 sz -= 0.5
@@ -953,17 +1006,17 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
             y -= sz + 5
         c.setFont("Helvetica", 8)
         for i, ln in enumerate(getattr(hdr, "left", [str(hdr)])):
-            c.drawString(m, H - 20 - i * 10, ln)
-        c.drawRightString(W - m, H - 20, f"{S('company')} - {title}")
-        c.drawRightString(W - m, H - 30, f"Page {doc.page}   |   Printed {dmy(today())}")
+            c.drawString(m, H - 20 - off - i * 10, ln)
+        c.drawRightString(W - m, H - 20 - off, f"{S('company')} - {title}")
+        c.drawRightString(W - m, H - 30 - off, f"Page {doc.page}   |   Printed {dmy(today())}")
         c.restoreState()
-        _draw_approved(c, W, appr, m)
 
     b = io.BytesIO()
-    doc = BaseDocTemplate(b, pagesize=(W, H), leftMargin=m, rightMargin=m, topMargin=top, bottomMargin=bottom)
-    doc.addPageTemplates([PageTemplate(frames=[Frame(m, bottom, W - 2 * m, H - top - bottom, id="f", leftPadding=0,
+    doc = BaseDocTemplate(b, pagesize=(W, H), leftMargin=m, rightMargin=m, topMargin=top, bottomMargin=m)
+    doc.addPageTemplates([PageTemplate(frames=[Frame(m, m, W - 2 * m, H - top - m, id="f", leftPadding=0,
                                                       rightPadding=0, topPadding=0, bottomPadding=0)], onPage=head)])
-    doc.build([t])
+    from reportlab.platypus import Spacer
+    doc.build([t, Spacer(1, 8), _sign_block(sum(wid), appr)])
     return b.getvalue()
 
 
@@ -2180,6 +2233,49 @@ elif page == "Settings":
                              ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk, marquee_on=mon, marquee_text=mtx).items():
                 q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
             st.success("Saved"); st.rerun()
+    st.divider()
+    st.subheader("Logo & print look")
+    st.caption("The logo and these colours are used automatically on the header of EVERY printed page / PDF "
+               "(reports, payroll, invoices, payslips). Change them here once - everything follows.")
+    lc = st.columns([2, 1, 1])
+    up = lc[0].file_uploader("Company logo (PNG / JPG)", type=["png", "jpg", "jpeg"], key="logo_up")
+    lpos = lc[1].selectbox("Logo position on the page header", ["Left", "Center", "Right"],
+                           ["Left", "Center", "Right"].index(S("logo_pos")) if S("logo_pos") in ("Left", "Center", "Right") else 0)
+    lhh = lc[2].number_input("Logo height (pt)", 15, 120, int(float(S("logo_h") or 40)), 5)
+    cc = st.columns(5)
+    hbg = cc[0].color_picker("Header row colour", S("pdf_head_bg"))
+    hfg = cc[1].color_picker("Header text colour", S("pdf_head_fg"))
+    tbg = cc[2].color_picker("TOTAL row colour", S("pdf_tot_bg"))
+    tfg = cc[3].color_picker("TOTAL text colour", S("pdf_tot_fg"))
+    prb = cc[4].text_input("Prepared by (name, bottom left)", S("prepared_by"))
+    bc = st.columns([1, 1, 4])
+    if bc[0].button("💾 Save print look", key="logo_save"):
+        new_logo = S("logo_b64")
+        if up is not None:
+            import base64
+            raw_ = up.getvalue()
+            try:
+                from PIL import Image
+                im_ = Image.open(io.BytesIO(raw_))
+                im_.thumbnail((700, 400))
+                buf_ = io.BytesIO()
+                im_.save(buf_, format="PNG")
+                raw_ = buf_.getvalue()
+            except Exception:
+                pass
+            new_logo = base64.b64encode(raw_).decode() if len(raw_) < 600000 else ""
+            if not new_logo:
+                st.error("The logo file is too big - use a smaller picture.")
+        for k, v in dict(logo_b64=new_logo, logo_pos=lpos, logo_h=lhh, prepared_by=prb, pdf_head_bg=hbg, pdf_head_fg=hfg,
+                         pdf_tot_bg=tbg, pdf_tot_fg=tfg).items():
+            q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
+        st.success("Saved - all new prints use it."); st.rerun()
+    if bc[1].button("🗑 Remove logo", key="logo_del"):
+        q("INSERT INTO settings(k,v) VALUES('logo_b64','') ON CONFLICT(k) DO UPDATE SET v=''", fetch=False)
+        st.rerun()
+    if S("logo_b64"):
+        import base64
+        st.image(base64.b64decode(S("logo_b64")), width=int(float(S("logo_h") or 40)) * 3, caption="Current logo")
     if role == "Admin" and not _restricted:
         st.divider()
         st.subheader("User access (which menu each user can open)")
