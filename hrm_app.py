@@ -1717,6 +1717,8 @@ elif page == "Bulk Attendance":
         elif e.empty:
             st.info("No staff found.")
         else:
+            if st.session_state.get("bk_msg"):
+                st.success(st.session_state.pop("bk_msg"))
             orig, days, labs, exk, tr = bulk_build(e, d1, d2, None if bpick == "—" else bpick)
             grid = orig.copy()
             grid.insert(0, "S/L", range(1, len(grid) + 1))
@@ -1728,12 +1730,17 @@ elif page == "Bulk Attendance":
             tbl(pd.DataFrame([{"TOTAL": f"TOTAL ({len(ed)} staff)", **tot}]), False)
             rows = bulk_rows(orig, ed, days, labs, exk, tr, e)
             n_new = sum(1 for r_ in rows if (r_[0], r_[1]) not in exk)
+            if not rows:
+                st.warning(f"Nothing to save: {len(exk)} day records in this period are ALREADY saved and nothing was changed. "
+                           "Change a cell (or use 'Set status for ALL' with a different status) to save new values.")
             st.info(f"Ready to save: {n_new} new day records and {len(rows) - n_new} changed ones "
                     f"({d1.strftime('%d/%m/%Y')} to {d2.strftime('%d/%m/%Y')}). Normal / OT hours per day come from the two "
                     "columns on the left of the days (change them per person if different).")
             if st.button("💾 Save bulk attendance", key="bk_save") and rows:
                 q_many(BULK_SQL, rows)
-                st.success(f"Saved {len(rows)} day records.")
+                st.session_state["bk_msg"] = (f"✅ Saved {len(rows)} day records "
+                                              f"({d1.strftime('%d/%m/%Y')} to {d2.strftime('%d/%m/%Y')}).")
+                st.rerun()
             sheet = ed.drop(columns=["id"]).copy()
             for k in "PALO":
                 sheet[k] = (ed[labs] == k).sum(axis=1)
