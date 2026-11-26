@@ -1613,7 +1613,7 @@ elif page == "Attendance":
         pick = st.selectbox("Set status for ALL", ["—"] + list(LBL.values()), key="att_st")
     with c[5]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
-        hn_pick = st.selectbox("Normal hrs for ALL", ["—", 8, 10, 12], key="att_hn", help="'—' = default from Settings")
+        hn_pick = st.selectbox("Nor hrs for ALL", ["—", 8, 10, 12], key="att_hn", help="'—' = default from Settings")
     with c[6]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         ho_pick = st.selectbox("OT hrs for ALL", ["—", 0, 1, 2], key="att_ho", help="'—' = default from Settings")
@@ -1716,7 +1716,7 @@ elif page == "Bulk Attendance":
                                   "Then change single cells if needed.")
     with c[6]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
-        bhn = st.selectbox("Normal hrs for ALL", ["—", 8, 10, 12], key="bk_hn", help="'—' = default from Settings")
+        bhn = st.selectbox("Nor hrs for ALL", ["—", 8, 10, 12], key="bk_hn", help="'—' = default from Settings")
     with c[7]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         bho = st.selectbox("OT hrs for ALL", ["—", 0, 1, 2], key="bk_ho", help="'—' = default from Settings")
