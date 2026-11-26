@@ -379,7 +379,7 @@ def place_on(tr, eid, ds, cur):
 
 def bulk_build(e, d1, d2, force=None):
     """Grid for the chosen staff and period: saved records are shown as they are; other working days start as P,
-    Fridays / special holidays start blank. Any date (past or future) can be saved."""
+    Fridays / special holidays start as O and are saved too. Any date (past or future) can be saved."""
     days = [d1 + timedelta(k) for k in range((d2 - d1).days + 1)]
     att = q("SELECT emp_id, day, status FROM attendance WHERE day BETWEEN ? AND ?", (str(d1), str(d2)))
     ex = {(int(t.emp_id), t.day): CODE.get(t.status, "P") for t in att.itertuples(index=False)}
@@ -397,9 +397,9 @@ def bulk_build(e, d1, d2, force=None):
             code = ex.get((int(r.id), ds))
             if code is None:
                 off = d.weekday() == we or hol_rate(hol, ds, *place_on(tr, int(r.id), ds, cur)) is not None
-                code = "" if off else "P"
-            if force and code != "":
-                code = force
+                code = "O" if off else "P"
+                if force and not off:
+                    code = force
             rec[lab] = code
         rows.append(rec)
     return pd.DataFrame(rows), days, labs, set(ex), tr
@@ -1687,7 +1687,7 @@ elif page == "Bulk Attendance":
     st.header("Bulk attendance: many days in one entry")
     st.caption("For when you do not enter attendance every day. Choose the period and Company / Section / Kofil, then change only "
                "the exceptions (A, L, O). Working days start as P with the default hours (Settings); Fridays, special holidays "
-               "start blank; any date, past or future, can be saved. Saved records are shown as they are and are kept unless you change the cell. "
+               "start as O (saved too); any date, past or future, can be saved. Saved records are shown as they are and are kept unless you change the cell. "
                "A blank cell writes nothing. To delete a record use Attendance > Edit / Delete.")
     cm, ds, sp = q("SELECT * FROM companies"), q("SELECT * FROM departments"), q("SELECT * FROM sponsors")
     cl, sl, kl = cm.name.tolist(), ds.name.tolist(), sp.name.tolist()
@@ -1703,7 +1703,7 @@ elif page == "Bulk Attendance":
     with c[5]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         bpick = st.selectbox("Set status for ALL", ["—", "P", "A", "L", "O"], key="bk_st",
-                             help="Fills every working-day cell in the grid with this status (Fridays / holidays stay blank). "
+                             help="Fills every working-day cell in the grid with this status (Fridays / holidays stay O). "
                                   "Then change single cells if needed.")
     qs = search_box("🔎 Search name / code / Iqama / passport", "bk_q")
     if not (fco and fsec and fspn):
