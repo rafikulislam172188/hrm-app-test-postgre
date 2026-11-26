@@ -1291,9 +1291,15 @@ if st.sidebar.button("Logout"):
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
         "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Import": "📥", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
-st.sidebar.caption(f"Today: {today().strftime(S('date_fmt'))} ({S('timezone')})")
 
 # ---------------- Dashboard
+@st.cache_data(ttl=600, show_spinner=False)
+def _net_month(d1, d2):
+    """Net payroll of one month (kept 10 minutes so the Dashboard opens fast)."""
+    pdf = calc_payroll(d1, d2, [], [], [], [])
+    return float(pdf.Net.sum()) if len(pdf) else 0.0
+
+
 if page == "Dashboard":
     st.header("Dashboard")
     e = emp_df()
@@ -1319,11 +1325,15 @@ if page == "Dashboard":
         return (f'<div class="row"><div class="donut" style="background:conic-gradient({bg})"><div>'
                 f'<b>{center}</b>{label}</div></div><div class="leg">{leg}</div></div>')
 
+    n_co = int((e.labour_type == "Company").sum())
+    n_out = int((e.labour_type == "Outside").sum())
     kp = [("👥", "Total Employees", n, "#e3f4e8"), ("🧍", "Present Today", pr, "#e3f4e8"),
           ("🌴", "On Leave", lv, "#fdf1d6"), ("🚫", "Absent", ab, "#fbe3df")]
     for col_, (ic, lb, v, bg) in zip(st.columns(4), kp):
+        sub = (f'<div class="lb" style="margin-top:2px">Company labour: <b>{n_co}</b><br>Outside labour: <b>{n_out}</b></div>'
+               if lb == "Total Employees" else "")
         col_.markdown(f'<div class="card kpi"><div class="ic" style="background:{bg}">{ic}</div>'
-                      f'<div><div class="lb">{lb}</div><div class="v">{v}</div></div></div>',
+                      f'<div><div class="lb">{lb}</div><div class="v">{v}</div>{sub}</div></div>',
                       unsafe_allow_html=True)
     st.write("")
     c1, c2 = st.columns(2)
@@ -1336,37 +1346,23 @@ if page == "Dashboard":
         [("Approved", L("Approved"), "#2e7d4f"), ("Pending", L("Pending"), "#f0b429"),
          ("Rejected", L("Rejected"), "#d64933")], len(lvs), "Total") + "</div>", unsafe_allow_html=True)
     st.write("")
-    c3, c4 = st.columns(2)
-    rc = a[a.status == "Present"].head(5)
-    items = "".join(
-        f'<div class="ci"><div class="av">{html.escape(str(r["name"])[:1].upper())}</div>'
-        f'<div><b>{html.escape(str(r["name"]))}</b><br><small>{r.hours:g}h + OT {r.ot_hours:g}h</small></div>'
-        f'<span class="badge">{r.status}</span></div>' for _, r in rc.iterrows()
-    ) or "<small>No check-ins today yet.</small>"
-    c3.markdown(f'<div class="card"><div class="ttl">Recent Check-ins</div>{items}</div>',
-                unsafe_allow_html=True)
     vals = []
-    for i in range(5, -1, -1):
+    for i in range(11, -1, -1):
         mm, yy = today().month - i, today().year
         while mm <= 0:
             mm, yy = mm + 12, yy - 1
         s0 = date(yy, mm, 1)
         e0 = (s0.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-        ck, mn = (str(s0), str(e0)), st.session_state.setdefault("_mn", {})
-        if ck not in mn or datetime.now().timestamp() - mn[ck][0] > 300:
-            pdf = calc_payroll(str(s0), str(e0), [], [], [], [])
-            mn[ck] = (datetime.now().timestamp(), float(pdf.Net.sum()) if len(pdf) else 0.0)
-        vals.append((s0.strftime("%b"), mn[ck][1]))
+        vals.append((s0.strftime("%b %y"), _net_month(str(s0), str(e0))))
     mx = max(v for _, v in vals) or 1
-    bars = "".join(f'<div><span style="height:{v / mx * 80:.0f}%"></span>{l}</div>' for l, v in vals)
-    c4.markdown(f'<div class="card"><div class="ttl">Monthly Payroll Summary</div>'
+    bars = "".join(f'<div><small>{v / 1000:,.0f}k</small><span style="height:{v / mx * 70:.0f}%"></span>{l}</div>'
+                   for l, v in vals)
+    st.markdown(f'<div class="card"><div class="ttl">Monthly Payroll Summary (last 12 months)</div>'
                 f'<small>Net payroll this month</small>'
                 f'<div style="font-size:26px;font-weight:700">{vals[-1][1]:,.0f} {cur_}</div>'
                 f'<div class="bars">{bars}</div></div>', unsafe_allow_html=True)
     st.write("")
     if len(e):
-        st.subheader("Section-wise headcount")
-        st.bar_chart(e.groupby("section").size())
         e["days_left"] = (pd.to_datetime(e.id_expiry, errors="coerce") - pd.Timestamp(today())).dt.days
         ex = e[e.days_left <= 60][["code", "name", "section", "sponsor", "id_expiry", "days_left"]]
         if len(ex):
@@ -1613,7 +1609,7 @@ elif page == "Attendance":
         pick = st.selectbox("Set status for ALL", ["—"] + list(LBL.values()), key="att_st")
     with c[5]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
-        hn_pick = st.selectbox("Nor hrs for ALL", ["—", 8, 10, 12], key="att_hn", help="'—' = default from Settings")
+        hn_pick = st.selectbox("Normal hrs for ALL", ["—", 8, 10, 12], key="att_hn", help="'—' = default from Settings")
     with c[6]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         ho_pick = st.selectbox("OT hrs for ALL", ["—", 0, 1, 2], key="att_ho", help="'—' = default from Settings")
@@ -1716,7 +1712,7 @@ elif page == "Bulk Attendance":
                                   "Then change single cells if needed.")
     with c[6]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
-        bhn = st.selectbox("Nor hrs for ALL", ["—", 8, 10, 12], key="bk_hn", help="'—' = default from Settings")
+        bhn = st.selectbox("Normal hrs for ALL", ["—", 8, 10, 12], key="bk_hn", help="'—' = default from Settings")
     with c[7]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         bho = st.selectbox("OT hrs for ALL", ["—", 0, 1, 2], key="bk_ho", help="'—' = default from Settings")
