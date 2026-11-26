@@ -810,9 +810,54 @@ FONTS = {"Helvetica": ("Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helv
 STYLES = ["Regular", "Bold", "Italic", "Bold Italic"]
 
 
+@st.cache_resource(show_spinner=False)
+def _font_index():
+    """{family: {style: .ttf path}} found in the 'fonts' folder next to this file and in the system font folders."""
+    import os
+    import re
+    idx = {}
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        here = os.getcwd()
+    for d in (os.path.join(here, "fonts"), "/usr/share/fonts", os.path.expanduser("~/.fonts")):
+        for root, _, fs in os.walk(d):
+            for f in fs:
+                m = re.match(r"^([A-Za-z0-9]+)(?:-(Regular|Bold|Italic|BoldItalic|Oblique|BoldOblique))?\.ttf$", f)
+                if not m:
+                    continue
+                stl = {"Oblique": "Italic", "BoldOblique": "BoldItalic"}.get(m.group(2), m.group(2)) or "Regular"
+                if re.search(r"(Bold|Italic|Oblique|Emoji|Math)", m.group(1)) and not m.group(2):
+                    continue                       # separate weight files / symbol fonts are not families
+                fam = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", m.group(1))
+                for a_, b_ in (("Deja Vu", "DejaVu"), ("Sans3", "Sans 3"), ("DMSans", "DM Sans")):
+                    fam = fam.replace(a_, b_)
+                idx.setdefault(fam, {}).setdefault(stl, os.path.join(root, f))
+    return {k: v for k, v in idx.items() if "Regular" in v}
+
+
+def font_families():
+    return list(FONTS) + [f for f in sorted(_font_index()) if f not in FONTS]
+
+
 def _fonts(family="Helvetica", style="Regular"):
-    f = FONTS.get(family, FONTS["Helvetica"])
-    return f[STYLES.index(style) if style in STYLES else 0], f[1]   # body font, bold font (header / TOTAL row)
+    if family in FONTS:
+        f = FONTS[family]
+        return f[STYLES.index(style) if style in STYLES else 0], f[1]   # body font, bold font (header / TOTAL row)
+    idx = _font_index().get(family)
+    if not idx:
+        return _fonts("Helvetica", style)
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    def reg(k):
+        path = idx.get(k) or idx["Regular"]
+        nm = f"{family}-{k if k in idx else 'Regular'}"
+        if nm not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(nm, path))
+        return nm
+    want = {"Regular": "Regular", "Bold": "Bold", "Italic": "Italic", "Bold Italic": "BoldItalic"}.get(style, "Regular")
+    return reg(want), reg("Bold")
 
 
 def approvers(hdr, df):
@@ -1042,7 +1087,7 @@ def download(df, name, hdr="", uid=""):
         paper = cc[2].selectbox("Paper", ["A4", "A3"], key="cpp_" + name + uid)
         fit = cc[3].checkbox("Fit on one page", key="cpf_" + name + uid)
         c2 = st.columns([1.3, 1.3, 1.6, 4])
-        fam = c2[0].selectbox("Font", list(FONTS), key="cpfa_" + name + uid)
+        fam = c2[0].selectbox("Font", font_families(), key="cpfa_" + name + uid)
         sty = c2[1].selectbox("Font style", STYLES, key="cpst_" + name + uid)
         fsz = c2[2].number_input("Font size (px, 0 = auto)", 0.0, 40.0, 0.0, 0.5, key="cpfs_" + name + uid)
         st.download_button("⬇ Custom PDF", df_pdf_custom(df, cols, rh, hdr, name.replace("_", " "), paper, fit, fam, sty, fsz),
