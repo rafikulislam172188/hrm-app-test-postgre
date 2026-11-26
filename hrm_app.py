@@ -398,8 +398,8 @@ def bulk_build(e, d1, d2, force=None):
             if code is None:
                 off = d.weekday() == we or hol_rate(hol, ds, *place_on(tr, int(r.id), ds, cur)) is not None
                 code = "O" if off else "P"
-                if force and not off:
-                    code = force
+            if force:
+                code = force
             rec[lab] = code
         rows.append(rec)
     return pd.DataFrame(rows), days, labs, set(ex), tr
@@ -1703,7 +1703,7 @@ elif page == "Bulk Attendance":
     with c[5]:
         st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
         bpick = st.selectbox("Set status for ALL", ["—", "P", "A", "L", "O"], key="bk_st",
-                             help="Fills every working-day cell in the grid with this status (Fridays / holidays stay O). "
+                             help="Fills every cell in the grid with this status (Fridays / holidays too - those who work then are paid by the weekend / holiday rules). "
                                   "Then change single cells if needed.")
     qs = search_box("🔎 Search name / code / Iqama / passport", "bk_q")
     if not (fco and fsec and fspn):
