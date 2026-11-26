@@ -1355,7 +1355,7 @@ if page == "Dashboard":
         e0 = (s0.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
         vals.append((s0.strftime("%b %y"), _net_month(str(s0), str(e0))))
     mx = max(v for _, v in vals) or 1
-    bars = "".join(f'<div><small>{v / 1000:,.0f}k</small><span style="height:{v / mx * 70:.0f}%"></span>{l}</div>'
+    bars = "".join(f'<div><small style="font-size:10px;white-space:nowrap">{v:,.0f}</small><span style="height:{v / mx * 70:.0f}%"></span>{l}</div>'
                    for l, v in vals)
     st.markdown(f'<div class="card"><div class="ttl">Monthly Payroll Summary (last 12 months)</div>'
                 f'<small>Net payroll this month</small>'
