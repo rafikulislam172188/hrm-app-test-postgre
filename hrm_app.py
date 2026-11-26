@@ -431,6 +431,11 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
+SCHEMA_VERSION = "2026-11-26a"   # change this whenever tables/settings change
+DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes"}
+
+
 def init():
     for s in [
         "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)",
@@ -447,8 +452,7 @@ def init():
             start TEXT, \"end\" TEXT, days INT, status TEXT)""",
     ]:
         q(s, fetch=False)
-    defaults = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes"}
+    defaults = DEFAULTS
     for k, v in defaults.items():
         q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT DO NOTHING", (k, v), fetch=False)
     q("CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, name TEXT UNIQUE, vat TEXT)", fetch=False)
@@ -476,52 +480,41 @@ def init():
 
 
 @st.cache_resource(show_spinner=False)
-def _init_once(url):
+def _init_once(url, ver):
     init()
     return True
 
 
 def init_guard():
     """Create / upgrade the tables once per server start (not on every click)."""
-    if not st.session_state.get("_db_ready"):
-        _init_once(DBURL or DB)
-        st.session_state["_db_ready"] = True
+    if st.session_state.get("_db_ready") != SCHEMA_VERSION:
+        _init_once(DBURL or DB, SCHEMA_VERSION)
+        st.session_state["_db_ready"] = SCHEMA_VERSION
 
 
 def S(k):
-    df = q("SELECT v FROM settings WHERE k=?", (k,))
-    if df.empty:
-        defaults = {
-            "company": "My Company",
-            "currency": "SAR",
-            "timezone": "Asia/Riyadh",
-            "std_hours": "8",
-            "work_days": "26",
-            "ot_mult": "1.5",
-            "date_fmt": "%d-%m-%Y",
-            "gosi_pct": "0",
-            "gosi_nat": "Saudi",
-            "vat_pct": "15",
-            "weekend": "4",
-            "def_normal": "10",
-            "def_ot": "2",
-            "inc_years": "2",
-            "inc_amount": "100",
-            "inc_repeat": "No",
-            "bulk_on": "Yes",
-        }
-        v = defaults.get(k, "")
-        q("INSERT INTO settings(k,v) VALUES(?,?) "
-          "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-          (k, v), fetch=False)
-        return v
-    return str(df.iloc[0, 0])
-    
+    r = q("SELECT v FROM settings WHERE k=?", (k,))
+    if len(r):
+        return r.iloc[0, 0]
+    d = DEFAULTS.get(k, "")
+    if k in DEFAULTS:
+        q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT DO NOTHING", (k, d), fetch=False)
+    return d
+
+
 def today():
-    if PG:
-        tz = ZoneInfo(S("timezone"))
-        return datetime.now(tz).date()
-    return date.today()
+    return datetime.now(ZoneInfo(S("timezone"))).date()
+
+
+def hrs(i, o):
+    try:
+        a = datetime.strptime(i, "%H:%M")
+        b = datetime.strptime(o, "%H:%M")
+        d = (b - a).total_seconds() / 3600
+        return round(d + 24 if d < 0 else d, 2)
+    except Exception:
+        return 0.0
+
 
 def emp_df(active=True):
     return q("""SELECT e.id, e.code, e.name, c.name AS company, d.name AS section, s.name AS sponsor, e.labour_type,
