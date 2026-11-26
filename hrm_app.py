@@ -489,21 +489,33 @@ def init_guard():
 
 
 def S(k):
-    return q("SELECT v FROM settings WHERE k=?", (k,)).iloc[0, 0]
-
-
-def today():
-    return datetime.now(ZoneInfo(S("timezone"))).date()
-
-
-def hrs(i, o):
-    try:
-        a = datetime.strptime(i, "%H:%M")
-        b = datetime.strptime(o, "%H:%M")
-        d = (b - a).total_seconds() / 3600
-        return round(d + 24 if d < 0 else d, 2)
-    except Exception:
-        return 0.0
+    df = q("SELECT v FROM settings WHERE k=?", (k,))
+    if df.empty:
+        defaults = {
+            "company": "My Company",
+            "currency": "SAR",
+            "timezone": "Asia/Riyadh",
+            "std_hours": "8",
+            "work_days": "26",
+            "ot_mult": "1.5",
+            "date_fmt": "%d-%m-%Y",
+            "gosi_pct": "0",
+            "gosi_nat": "Saudi",
+            "vat_pct": "15",
+            "weekend": "4",
+            "def_normal": "10",
+            "def_ot": "2",
+            "inc_years": "2",
+            "inc_amount": "100",
+            "inc_repeat": "No",
+            "bulk_on": "Yes",
+        }
+        v = defaults.get(k, "")
+        q("INSERT INTO settings(k,v) VALUES(?,?) "
+          "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+          (k, v), fetch=False)
+        return v
+    return str(df.iloc[0, 0])
 
 
 def emp_df(active=True):
