@@ -1014,7 +1014,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
       Basic = sum of (basic in force that day / working days) over present + leave working days. The basic in force grows
         by the service increment (Settings: +amount after every N years from the joining date).
       Food, Other allowance = amount / working days x (present + leave + NO-WORK days); Special allowance is FIXED
-      Absent working day (A, or not marked): that day's basic is not paid AND basic / total days of the month is deducted
+      Absent working day (A, or not marked): basic / total days of the month is cut from basic AND the same amount is deducted again as a penalty
       No-work day (O): that day's basic is not paid, but NO penalty and NO food / allowance deduction
       Full month present: Bonus = basic / total days of the month.
       Extra-hour pay (per company): a day with more than N hours pays one hour of basic = basic / (N x days of the month)
@@ -1139,6 +1139,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
                     days_ab += ab
                     days_nw += nwk
                     basic += (sum(rt(x[0]) for x in p_) + sum(rt(x[0]) for x in l_)) / wdm
+                    basic += rate_m * ab * (1 / wdm - 1 / nd)   # an absent day's basic is cut at basic / days-of-month, not / working days
                     food += r.food_allow / wdm * (paid + nwk)
                     if pall.get(mth):
                         spa += r.special_allow * paid / pall[mth]    # fixed amount, shared by days worked at each place
@@ -1665,7 +1666,7 @@ elif page == "Attendance":
             sheet = sign(ed.drop(columns=["id"]).assign(Status=sc, **{"Normal Hrs": nh_, "OT Hrs": oh_, "Total Hrs": nh_ + oh_}))
             st.session_state["_monlab"] = f"Attendance date: {day.strftime('%d/%m/%Y')}"
             download(sheet, f"attendance_{day}", hdr_of(str(day), str(day), eff(fsec, sl), (), (), eff(fspn, kl), eff(fco, cl)), "att")
-        st.caption("🟢 P = Present (paid), 🟡 L = Leave (paid), 🔴 A = Absent (day's basic not paid + penalty), ⚪ O = No work (that day's basic is not paid; no penalty, food kept). "
+        st.caption("🟢 P = Present (paid), 🟡 L = Leave (paid), 🔴 A = Absent (basic / days-of-month cut twice: from basic + penalty), ⚪ O = No work (that day's basic is not paid; no penalty, food kept). "
                    "'Set status for ALL' fills every row with the chosen status - then change single rows if needed. "
                    "Normal / OT hours are pre-filled from Settings (default 10 + 2). Total Hrs updates after Save. "
                    "Weekend day: no work = no pay, work = all hours paid as OT.")
@@ -2071,7 +2072,7 @@ elif page == "Settings":
     st.info("**Pay rules in this software**  \n"
             "• **Special allowance** is a FIXED monthly amount: no reduction for absence, no penalty, no deduction.  \n"
             "• **Food and Other allowance** follow the working days (days - Fridays - special holidays).  \n"
-            "• **Absence:** that day's basic is not paid AND basic / total days of the month (30 or 31) is deducted as a penalty (basic only).  \n"
+            "• **Absence:** each absent day cuts basic / total days of the month (30 or 31) from the basic AND the same amount again as a penalty (basic only; no division by working days).  \n"
             "• **Bonus** for a full month = basic / total days of the month.  \n"
             "• **No work (O):** that day's basic is not paid, but no penalty and no food / allowance deduction.  \n"
             "• **Extra-hour pay** (set per company in Setup): a day over N hours pays 1 hour of basic = basic / (N x days of the month).  \n"
