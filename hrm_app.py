@@ -377,9 +377,9 @@ def place_on(tr, eid, ds, cur):
     return (last[4], last[5], last[6]) if last else (t[0][1], t[0][2], t[0][3])
 
 
-def bulk_build(e, d1, d2):
+def bulk_build(e, d1, d2, force=None):
     """Grid for the chosen staff and period: saved records are shown as they are; other working days start as P,
-    Fridays / special holidays / days after today start blank."""
+    Fridays / special holidays start blank. Any date (past or future) can be saved."""
     days = [d1 + timedelta(k) for k in range((d2 - d1).days + 1)]
     att = q("SELECT emp_id, day, status FROM attendance WHERE day BETWEEN ? AND ?", (str(d1), str(d2)))
     ex = {(int(t.emp_id), t.day): CODE.get(t.status, "P") for t in att.itertuples(index=False)}
@@ -396,8 +396,10 @@ def bulk_build(e, d1, d2):
             ds = d.isoformat()
             code = ex.get((int(r.id), ds))
             if code is None:
-                off = d.weekday() == we or d > today() or hol_rate(hol, ds, *place_on(tr, int(r.id), ds, cur)) is not None
+                off = d.weekday() == we or hol_rate(hol, ds, *place_on(tr, int(r.id), ds, cur)) is not None
                 code = "" if off else "P"
+            if force and code != "":
+                code = force
             rec[lab] = code
         rows.append(rec)
     return pd.DataFrame(rows), days, labs, set(ex), tr
@@ -1663,7 +1665,7 @@ elif page == "Attendance":
             sheet = sign(ed.drop(columns=["id"]).assign(Status=sc, **{"Normal Hrs": nh_, "OT Hrs": oh_, "Total Hrs": nh_ + oh_}))
             st.session_state["_monlab"] = f"Attendance date: {day.strftime('%d/%m/%Y')}"
             download(sheet, f"attendance_{day}", hdr_of(str(day), str(day), eff(fsec, sl), (), (), eff(fspn, kl), eff(fco, cl)), "att")
-        st.caption("🟢 P = Present (paid), 🟡 L = Leave (paid), 🔴 A = Absent (not paid), ⚪ O = No work (that day's basic is not paid; no penalty, food kept). "
+        st.caption("🟢 P = Present (paid), 🟡 L = Leave (paid), 🔴 A = Absent (day's basic not paid + penalty), ⚪ O = No work (that day's basic is not paid; no penalty, food kept). "
                    "'Set status for ALL' fills every row with the chosen status - then change single rows if needed. "
                    "Normal / OT hours are pre-filled from Settings (default 10 + 2). Total Hrs updates after Save. "
                    "Weekend day: no work = no pay, work = all hours paid as OT.")
@@ -1683,11 +1685,11 @@ elif page == "Bulk Attendance":
     st.header("Bulk attendance: many days in one entry")
     st.caption("For when you do not enter attendance every day. Choose the period and Company / Section / Kofil, then change only "
                "the exceptions (A, L, O). Working days start as P with the default hours (Settings); Fridays, special holidays "
-               "and days after today start blank. Saved records are shown as they are and are kept unless you change the cell. "
+               "start blank; any date, past or future, can be saved. Saved records are shown as they are and are kept unless you change the cell. "
                "A blank cell writes nothing. To delete a record use Attendance > Edit / Delete.")
     cm, ds, sp = q("SELECT * FROM companies"), q("SELECT * FROM departments"), q("SELECT * FROM sponsors")
     cl, sl, kl = cm.name.tolist(), ds.name.tolist(), sp.name.tolist()
-    c = st.columns([1, 1, 1.2, 1.2, 1.2])
+    c = st.columns([1, 1, 1.2, 1.2, 1.2, 1.2])
     d1 = dbox(c[0], "From", today().replace(day=1), "bk_a")
     d2 = dbox(c[1], "To", today(), "bk_b")
     with c[2]:
@@ -1696,6 +1698,11 @@ elif page == "Bulk Attendance":
         fsec = msel("Section *", sl, "bk_sec", False, "Select (required)")
     with c[4]:
         fspn = msel("Sponsor / Kofil *", kl, "bk_spn", False, "Select (required)")
+    with c[5]:
+        st.markdown('<span class="cb cb-st"></span>', unsafe_allow_html=True)
+        bpick = st.selectbox("Set status for ALL", ["—", "P", "A", "L", "O"], key="bk_st",
+                             help="Fills every working-day cell in the grid with this status (Fridays / holidays stay blank). "
+                                  "Then change single cells if needed.")
     qs = search_box("🔎 Search name / code / Iqama / passport", "bk_q")
     if not (fco and fsec and fspn):
         st.warning("Company, Section and Sponsor / Kofil are mandatory. Select them (or choose 'All') to open the grid.")
@@ -1708,10 +1715,10 @@ elif page == "Bulk Attendance":
         elif e.empty:
             st.info("No staff found.")
         else:
-            orig, days, labs, exk, tr = bulk_build(e, d1, d2)
+            orig, days, labs, exk, tr = bulk_build(e, d1, d2, None if bpick == "—" else bpick)
             grid = orig.copy()
             grid.insert(0, "S/L", range(1, len(grid) + 1))
-            ed = st.data_editor(grid, hide_index=True, use_container_width=True, key=f"bulk{d1}{d2}{fco}{fsec}{fspn}{qs}",
+            ed = st.data_editor(grid, hide_index=True, use_container_width=True, key=f"bulk{d1}{d2}{fco}{fsec}{fspn}{qs}{bpick}",
                                 disabled=["S/L", "id", "Code", "Name", "Iqama ID", "Pay Type", "Company", "Section", "Sponsor"],
                                 column_config={"id": None, **{lab: _selcol() for lab in labs}})
             ed = ed.drop(columns=["S/L"])
@@ -2064,7 +2071,7 @@ elif page == "Settings":
     st.info("**Pay rules in this software**  \n"
             "• **Special allowance** is a FIXED monthly amount: no reduction for absence, no penalty, no deduction.  \n"
             "• **Food and Other allowance** follow the working days (days - Fridays - special holidays).  \n"
-            "• **Absence:** that day's basic is not paid AND basic / total days of the month is deducted (basic only, never food).  \n"
+            "• **Absence:** that day's basic is not paid AND basic / total days of the month (30 or 31) is deducted as a penalty (basic only).  \n"
             "• **Bonus** for a full month = basic / total days of the month.  \n"
             "• **No work (O):** that day's basic is not paid, but no penalty and no food / allowance deduction.  \n"
             "• **Extra-hour pay** (set per company in Setup): a day over N hours pays 1 hour of basic = basic / (N x days of the month).  \n"
