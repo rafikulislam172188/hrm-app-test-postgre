@@ -1301,6 +1301,12 @@ def _net_month(d1, d2):
 
 
 if page == "Dashboard":
+    st.markdown(
+        '<style>.mq{overflow:hidden;white-space:nowrap;background:#fff;border-radius:12px;padding:8px 0;margin-bottom:10px}'
+        '.mq span{display:inline-block;padding-left:100%;font-size:26px;font-weight:800;color:#ff2e93;'
+        'animation:mqmove 18s linear infinite}'
+        '@keyframes mqmove{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}</style>'
+        f'<div class="mq"><span>{html.escape(str(S("company")))}</span></div>', unsafe_allow_html=True)
     st.header("Dashboard")
     e = emp_df()
     t = str(today())
