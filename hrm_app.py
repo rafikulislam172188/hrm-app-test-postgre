@@ -1719,8 +1719,10 @@ elif page == "Bulk Attendance":
         else:
             if st.session_state.get("bk_msg"):
                 st.success(st.session_state.pop("bk_msg"))
-            orig, days, labs, exk, tr = bulk_build(e, d1, d2, None if bpick == "—" else bpick)
+            orig, days, labs, exk, tr = bulk_build(e, d1, d2)
             grid = orig.copy()
+            if bpick != "—":
+                grid[labs] = bpick      # shown / edited values; "orig" stays what is really saved, so saved cells that differ are rewritten
             grid.insert(0, "S/L", range(1, len(grid) + 1))
             ed = st.data_editor(grid, hide_index=True, use_container_width=True, key=f"bulk{d1}{d2}{fco}{fsec}{fspn}{qs}{bpick}",
                                 disabled=["S/L", "id", "Code", "Name", "Iqama ID", "Pay Type", "Company", "Section", "Sponsor"],
