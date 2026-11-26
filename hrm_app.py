@@ -2186,6 +2186,16 @@ elif page == "Settings":
                    "default of his role. Admin always sees everything. Create users in the Users menu.")
         if st.session_state.get("ua_flash"):
             st.success(st.session_state.pop("ua_flash"))
+        with st.expander("➕ Add a new user (any number of users)"):
+            with st.form("ua_new", clear_on_submit=True):
+                c = st.columns(3)
+                nu, np_, nr = c[0].text_input("Username"), c[1].text_input("Password", type="password"), \
+                    c[2].selectbox("Role", ["Manager", "HR", "Admin"])
+                if st.form_submit_button("Create user") and nu.strip() and np_:
+                    q("INSERT INTO users(username,pw,role) VALUES(?,?,?) ON CONFLICT(username) "
+                      "DO UPDATE SET pw=excluded.pw, role=excluded.role", (nu.strip(), pw(np_), nr), fetch=False)
+                    st.session_state["ua_flash"] = f"User '{nu.strip()}' saved. Now choose him below and give his menu access."
+                    st.rerun()
         us_ = q("SELECT username, role, perms FROM users ORDER BY username")
         us_ = us_[us_.role != "Admin"]
         if us_.empty:
@@ -2204,6 +2214,14 @@ elif page == "Settings":
                                                 "Delete": st.column_config.CheckboxColumn(help="Can delete data on this menu")})
             ch = ["%s:V%s%s" % (r_.Menu, "E" if r_.Edit else "", "D" if r_.Delete else "")
                   for r_ in ed_.itertuples(index=False) if r_.Show or r_.Edit or r_.Delete]
+            oth_ = [x for x in us_.username.tolist() if x != ua]
+            cp_ = st.selectbox("Copy access from another user (saves time for many users)", ["—"] + oth_, key=f"ua_cp_{ua}")
+            if cp_ != "—" and st.button(f"📋 Copy {cp_}'s access to {ua}", key="ua_copy"):
+                q("UPDATE users SET perms=? WHERE username=?",
+                  (us_[us_.username == cp_].perms.iloc[0], ua), fetch=False)
+                st.session_state["ua_flash"] = f"Copied {cp_}'s access to {ua}."
+                st.session_state.pop(f"ua_g_{ua}", None)
+                st.rerun()
             c = st.columns([1, 1, 4])
             if c[0].button("💾 Save access", key="ua_save"):
                 q("UPDATE users SET perms=? WHERE username=?", ("|".join(ch), ua), fetch=False)
