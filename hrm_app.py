@@ -1180,7 +1180,7 @@ def _pay_groups(cl, tot_row, fonts, wid=None, fs=7):
         j = k + 1
     cmds += [("BOX", (0, 0), (0, -1), 2.0, box), ("FONTSIZE", (0, 0), (-1, 0), fs + 2.5),
              ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(S("pdf_head_bg"))), ("TEXTCOLOR", (0, 0), (-1, 1), colors.HexColor(S("pdf_head_fg"))),
-             ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 2.0, box), ("LINEBELOW", (0, 1), (-1, 1), 2.0, box)]
+             ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 0.8, box), ("LINEBELOW", (0, 1), (-1, 1), 1.0, box)]
     if tot_row is not None:                     # 'TOTAL (n)' centred over the label columns (up to the first total figure)
         lab = next((str(v) for v in tot_row if str(v).startswith("TOTAL")), "TOTAL")
         kk = next((i for i, v in enumerate(tot_row) if i > 0 and str(v) not in ("", "nan") and not str(v).startswith("TOTAL")), 0)
