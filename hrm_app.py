@@ -259,6 +259,19 @@ def _audit_raw(usr, action, tbl, detail):
         pass
 
 
+def _act(action, detail="", tbl="", once=None):
+    """Record one user action (opened a menu, created a salary sheet, printed / downloaded...). once = key: only once per session."""
+    try:
+        if once is not None:
+            seen = st.session_state.setdefault("_act_seen", set())
+            if once in seen:
+                return
+            seen.add(once)
+        _audit_raw(_who(), action, tbl, detail)
+    except Exception:
+        pass
+
+
 def _tz_ok():
     try:
         r = _run("SELECT v FROM settings WHERE k='timezone'", (), True)
@@ -1606,13 +1619,14 @@ def download(df, name, hdr="", uid=""):
     try:
         c[3].download_button("⬇ Excel (sheet)" if _is_pay(df.columns) else "⬇ Excel", pay_xlsx(df, name.replace("_", " "), hdr),
                              f"{name}_{today()}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             key="xl_" + name + uid)
+                             key="xl_" + name + uid, on_click=_act, args=("Download Excel", f"{name} | {hdr} | {len(df) - 1} rows", name))
     except Exception:
         c[3].caption("Excel: pip install openpyxl")
-    c[0].download_button("⬇ CSV", _csv_bytes(df), f"{name}_{today()}.csv", "text/csv", key="csv_" + name + uid)
+    c[0].download_button("⬇ CSV", _csv_bytes(df), f"{name}_{today()}.csv", "text/csv", key="csv_" + name + uid,
+                         on_click=_act, args=("Download CSV", f"{name} | {hdr} | {len(df) - 1} rows", name))
     try:
         c[1].download_button("⬇ PDF (print)", df_pdf(df, name.replace("_", " "), hdr), f"{name}_{today()}.pdf",
-                             "application/pdf", key="pdf_" + name + uid)
+                             "application/pdf", key="pdf_" + name + uid, on_click=_act, args=("Print / PDF", f"{name} | {hdr} | {len(df) - 1} rows", name))
     except ImportError:
         c[1].caption("pip install reportlab")
         return
@@ -1628,7 +1642,8 @@ def download(df, name, hdr="", uid=""):
         sty = c2[1].selectbox("Font style", STYLES, key="cpst_" + name + uid)
         fsz = c2[2].number_input("Font size (px, 0 = auto)", 0.0, 40.0, 0.0, 0.5, key="cpfs_" + name + uid)
         st.download_button("⬇ Custom PDF", df_pdf_custom(df, cols, rh, hdr, name.replace("_", " "), paper, fit, fam, sty, fsz),
-                           f"{name}_custom_{today()}.pdf", "application/pdf", key="cpd_" + name + uid)
+                           f"{name}_custom_{today()}.pdf", "application/pdf", key="cpd_" + name + uid,
+                           on_click=_act, args=("Custom print PDF", f"{name} | {hdr} | columns: {len(cols)}", name))
 
 
 PCOLS = ["Code", "Name", "Join Date", "Iqama ID", "Passport No", "Company", "Section", "Sponsor", "Labour", "Pay", "Mode",
@@ -1991,6 +2006,9 @@ if st.sidebar.button("Logout"):
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
         "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑", "Audit Log": "📜"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
+if st.session_state.get("_lastpage") != page:
+    st.session_state["_lastpage"] = page
+    _act("Opened menu", page, page)
 _pf = _perm.get(page) if _restricted else None
 if _pf is None:                         # no personal setting: the role decides (Admin / HR edit, Admin delete)
     _CAN_E, _CAN_D = role in ("Admin", "HR"), role == "Admin"
@@ -2275,7 +2293,8 @@ elif page == "Transfer":
                                            [("Profile", prof), ("Joined / transfers", ev),
                                             ("Where he worked (company / section / kofil)", add_total(wk))],
                                            appr=approvers(Hdr(""), pd.DataFrame({"Sponsor": [r.sponsor or ""]}))),
-                                   f"employee_{r.code}.pdf", "application/pdf", key="trf_pdf")
+                                   f"employee_{r.code}.pdf", "application/pdf", key="trf_pdf",
+                                   on_click=_act, args=("Employee document PDF", f"{r.code} {r['name']}", "employees"))
             except ImportError:
                 st.caption("pip install reportlab")
 
@@ -2668,6 +2687,8 @@ elif page == "Payroll":
         shown = True
         df = view_pay(raw)
         st.subheader(f"Period {a} to {b}  -  {', '.join(cs) if cs else 'All companies'}")
+        _act("Payroll sheet created", f"{a} to {b} | {', '.join(cs) if cs else 'All companies'} | {len(raw)} lines | Net total {raw.Net.sum():,.2f} | filters: {hdr_of(a, b, f[2], f[3], f[4], f[5], cs)}",
+             "payroll", once=("pay", a, b, tuple(cs), str(f[2:6]), f[7]))
         tbl(df)
         c = st.columns(3)
         c[0].metric("Total Net", f"{raw.Net.sum():,.2f} {cur_}")
@@ -2679,7 +2700,8 @@ elif page == "Payroll":
         try:
             row = raw.iloc[sel]
             st.download_button("🧾 Download payslip PDF", payslip_pdf(row, a, b), f"payslip_{row.Code}_{a}_{b}.pdf",
-                               "application/pdf", key=f"psl_btn{gi}")
+                               "application/pdf", key=f"psl_btn{gi}",
+                               on_click=_act, args=("Payslip PDF", f"{row.Code} {row.Name} | {a} to {b} | Net {row.Net:,.2f}", "payroll"))
         except ImportError:
             st.info("For payslip PDF run: pip install reportlab")
     if not shown:
@@ -2735,6 +2757,8 @@ elif page == "Invoices":
         g["Invoice + VAT"] = g.Invoice + g.VAT
         g["Profit"] = g.Invoice - g.Payroll - g.Costs
         g = g.round(2)
+        _act("Invoice / profit sheet created", f"{a} to {b} | {', '.join(cs) if cs else 'All companies'} | {len(g)} rows | Invoice {g.Invoice.sum():,.2f}",
+             "invoices", once=("inv", a, b, tuple(cs), str(f[2:6])))
         tbl(g)
         c = st.columns(3)
         c[0].metric("Invoice (ex VAT)", f"{g.Invoice.sum():,.2f} {cur_}")
@@ -2857,6 +2881,8 @@ elif page == "Reports":
         if df.empty:
             continue
         shown = True
+        _act("Report created", f"{kind} | {a} to {b} | {', '.join(cs) if cs else 'All companies'} | {len(df)} rows | {hdr_of(*fi[:7])}",
+             "reports", once=("rep", kind, str(fi)))
         st.subheader(f"{kind}  |  Period {a} to {b}  -  {', '.join(cs) if cs else 'All companies'}")
         tbl(df)
         download(df, kind.replace(" ", "_").replace("(", "").replace(")", "").replace("/", ""), hdr_of(*fi[:7]), str(gi))
