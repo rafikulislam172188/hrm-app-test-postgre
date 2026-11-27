@@ -747,10 +747,12 @@ def add_total(df, total=True):
     d.insert(0, "S/L", [str(i) for i in range(1, len(d) + 1)]) if "S/L" not in d.columns else d.__setitem__("S/L", d["S/L"].astype(str))
     isn = lambda c: pd.api.types.is_numeric_dtype(d[c]) and not pd.api.types.is_bool_dtype(d[c])
     num = [c for c in d.columns if isn(c) and c not in RATECOLS and "rate" not in str(c).lower()]
-    if not total or not num:
+    keep = [c for c in d.columns if c == "Monthly Basic Rate" and c not in num]   # payroll: total of the monthly basic rates too
+    if not total or not (num or keep):
         return d
     t = {c: (float("nan") if isn(c) else "") for c in d.columns}
     t.update({c: round(float(d[c].sum()), 2) for c in num})
+    t.update({c: round(float(pd.to_numeric(d[c], errors="coerce").sum()), 2) for c in keep})
     t[next(c for c in d.columns if c != "S/L" and not isn(c))] = f"TOTAL ({len(d)})"
     ints = [c for c in d.columns if pd.api.types.is_integer_dtype(d[c])]
     out = pd.concat([d, pd.DataFrame([t])], ignore_index=True)
@@ -1121,7 +1123,7 @@ def _is_pay(names):
     return bool(nm & {"Basic", "Net"}) and len(nm & _PSPEC) >= 3
 
 
-def _pay_groups(cl, tot_row, fonts):
+def _pay_groups(cl, tot_row, fonts, wid=None, fs=7):
     """Payroll / salary sheet: a band 'Employee Details | Attendance Details | Salary Details | Remarks' above the column headings,
     a box around each group and the TOTAL label centred over the left-hand columns. Returns (rows, extra style commands, repeatRows)."""
     names = list(cl[0])
@@ -1143,7 +1145,9 @@ def _pay_groups(cl, tot_row, fonts):
         while k + 1 < n and _PGROUP.get(names[k + 1]) == g:
             k += 1
         if g:
-            band[j] = g
+            gw = sum(wid[j:k + 1]) - 4 if wid else 1e9
+            from reportlab.pdfbase.pdfmetrics import stringWidth as sw_
+            band[j] = next((t_ for t_ in (g, g.split()[0], g[:4] + ".") if sw_(t_, fonts[1], fs) <= gw), "")   # long name -> shorter one
             cmds += [("SPAN", (j, 0), (k, 0)), ("ALIGN", (j, 0), (k, 0), "CENTER")]
         cmds.append(("BOX", (j, 0), (k, -1), 1.1, box))
         j = k + 1
@@ -1181,7 +1185,7 @@ def df_pdf(df, title, hdr=""):
         fs, wid = _pdf_fit(data, ps[0], ps[1], m, 88 + off, bottom=bottom, fonts=fonts, bold_last=istot)
         if fs >= 6:
             break
-    cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts)
+    cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
     t = Table(cl, colWidths=wid, repeatRows=rep_)
     t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts) + extra))
     sty = getSampleStyleSheet()
@@ -1205,8 +1209,10 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
     istot = len(d) > 0 and any(str(v).startswith("TOTAL") for v in d.iloc[-1].tolist())
     data = _pdf_data(d[[c for c in d.columns if c in cols]], 30)
     if istot and not any(c.startswith("TOTAL") for c in data[-1]):   # the label column was not chosen: label the row anyway
-        i0 = next((i for i, c in enumerate(data[-1]) if c == ""), 0)
-        data[-1][i0] = "TOTAL" if data[-1][i0] == "" else "TOTAL " + data[-1][i0]
+        lab_ = next((str(v) for v in d.iloc[-1].tolist() if str(v).startswith("TOTAL")), "TOTAL")      # 'TOTAL (n)' with the head-count
+        ch_ = [c for c in d.columns if c in cols]
+        i0 = next((i for i, c in enumerate(data[-1]) if c == "" and ch_[i] != "S/L"), 0)
+        data[-1][i0] = lab_ if data[-1][i0] == "" else lab_ + " " + data[-1][i0]
     W, H = landscape(A3 if paper == "A3" else A4)
     appr, m, top = getattr(hdr, "appr", []), 18, 96
     lg = _logo()
@@ -1218,7 +1224,7 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
         rowh = max(8, min(rowh, (H - top - bottom) / len(data)))
     auto = min(11.0, max(4.5, rowh * 0.5))
     fs, wid = _pdf_fit(data, W, H, m, top, fsize if fsize > 0 else auto, check_h=False, fonts=fonts, fixed=fsize > 0, bold_last=istot)
-    cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts)
+    cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
     t = Table(cl, colWidths=wid, rowHeights=[rowh] * len(cl), repeatRows=rep_)
     t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra))
     lines = [(getattr(hdr, "co", "All"), "Helvetica-Bold", 17), (f"Sponsor / Kofil: {getattr(hdr, 'kofil', 'All')}", "Helvetica-Bold", 12),
