@@ -781,7 +781,7 @@ def _pay_html(d):
         top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border:3px solid {hf};font-size:15px">{html.escape(g or "")}</th>'
         edge[j], edge[k] = 1, 1
         j = k + 1
-    top2 = "".join(f'<th style="{th}top:25px;white-space:nowrap">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
+    top2 = "".join(f'<th style="{th}top:25px;white-space:nowrap;border-top:3px solid {hf};border-bottom:3px solid {hf}">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
 
     def side(i):
         g_ = lambda x: None if x < 0 or x >= n else (cols[x] == "S/L", _PGROUP.get(cols[x]))
@@ -1180,7 +1180,7 @@ def _pay_groups(cl, tot_row, fonts, wid=None, fs=7):
         j = k + 1
     cmds += [("BOX", (0, 0), (0, -1), 2.0, box), ("FONTSIZE", (0, 0), (-1, 0), fs + 2.5),
              ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(S("pdf_head_bg"))), ("TEXTCOLOR", (0, 0), (-1, 1), colors.HexColor(S("pdf_head_fg"))),
-             ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 0.6, box), ("LINEBELOW", (0, 1), (-1, 1), 1.0, box)]
+             ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 2.0, box), ("LINEBELOW", (0, 1), (-1, 1), 2.0, box)]
     if tot_row is not None:                     # 'TOTAL (n)' centred over the label columns (up to the first total figure)
         lab = next((str(v) for v in tot_row if str(v).startswith("TOTAL")), "TOTAL")
         kk = next((i for i, v in enumerate(tot_row) if i > 0 and str(v) not in ("", "nan") and not str(v).startswith("TOTAL")), 0)
@@ -1366,6 +1366,11 @@ def pay_xlsx(df, title, hdr):
     for ri in range(g_row, last + 1):
         for ci in range(1, n + 1):
             ws.cell(ri, ci).border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    if pay:                                   # thick horizontal lines under the group names and under the headings
+        for ci in range(1, n + 1):
+            for rr in (g_row, h_row):
+                c = ws.cell(rr, ci); b = c.border
+                c.border = Border(left=b.left, right=b.right, top=b.top, bottom=Side(style="thick", color="000000"))
     if istot:
         tr = ws.cell(last, 1 if cols[0] != "S/L" else 2).value
         lab = next((str(v) for v in d.iloc[-1].tolist() if str(v).startswith("TOTAL")), "TOTAL")
