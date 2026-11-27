@@ -1065,6 +1065,58 @@ def _pdf_style(fs, istot, rowpad=1.5, fonts=("Helvetica", "Helvetica-Bold")):
     return st_
 
 
+PAY_GROUPS = [
+    ("Employee Details", ["Code", "Name", "Join Date", "Iqama ID", "Passport No", "Company", "Section", "Sponsor", "Labour", "Pay",
+                          "Mode", "Monthly Basic Rate", "Hr Rate", "OT Rate"]),
+    ("Attendance Details", ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs"]),
+    ("Salary Details", ["Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay",
+                        "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net"]),
+    ("Remarks", ["Bank", "Cash", "Signature", "Finger"])]
+_PGROUP = {c: g for g, cs in PAY_GROUPS for c in cs}
+
+
+def _is_pay(names):
+    return {"Basic", "Net", "Days", "Code"} <= set(names)
+
+
+def _pay_groups(cl, tot_row, fonts):
+    """Payroll / salary sheet: a band 'Employee Details | Attendance Details | Salary Details | Remarks' above the column headings,
+    a box around each group and the TOTAL label centred over the left-hand columns. Returns (rows, extra style commands, repeatRows)."""
+    names = list(cl[0])
+    if not _is_pay(names):
+        return cl, [], 1
+    from reportlab.lib import colors
+    box = colors.HexColor(S("pdf_head_fg"))
+    n = len(names)
+    band = [""] * n
+    cmds = []
+    sl = names[0] == "S/L"
+    j = 1 if sl else 0
+    if sl:                                      # S/L stands tall over both heading rows
+        band[0], cl[0][0] = "S/L", ""
+        cmds += [("SPAN", (0, 0), (0, 1)), ("VALIGN", (0, 0), (0, 1), "MIDDLE"), ("ALIGN", (0, 0), (0, 1), "CENTER")]
+    while j < n:
+        g = _PGROUP.get(names[j])
+        k = j
+        while k + 1 < n and _PGROUP.get(names[k + 1]) == g:
+            k += 1
+        if g:
+            band[j] = g
+            cmds += [("SPAN", (j, 0), (k, 0)), ("ALIGN", (j, 0), (k, 0), "CENTER")]
+        cmds.append(("BOX", (j, 0), (k, -1), 1.1, box))
+        j = k + 1
+    cmds += [("BOX", (0, 0), (0, -1), 1.1, box),
+             ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(S("pdf_head_bg"))), ("TEXTCOLOR", (0, 0), (-1, 1), colors.HexColor(S("pdf_head_fg"))),
+             ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 0.6, box), ("LINEBELOW", (0, 1), (-1, 1), 1.0, box)]
+    if tot_row is not None:                     # 'TOTAL (n)' centred over the label columns (up to the first total figure)
+        lab = next((str(v) for v in tot_row if str(v).startswith("TOTAL")), "TOTAL")
+        kk = next((i for i, v in enumerate(tot_row) if i > 0 and str(v) not in ("", "nan") and not str(v).startswith("TOTAL")), 0)
+        if kk > 1:
+            cl[-1][:kk] = [lab] + [""] * (kk - 1)
+            cmds += [("SPAN", (0, len(cl)), (kk - 1, len(cl))), ("ALIGN", (0, len(cl)), (kk - 1, len(cl)), "CENTER")]
+    return [band] + cl, cmds, 2
+
+
 def _pdf_data(df, cap=40):
     fmt = lambda v: "" if pd.isna(v) else (f"{v:,.2f}" if isinstance(v, float) else str(v))
     return [[str(c) for c in df.columns]] + [[fmt(v)[:cap] for v in row] for row in df.itertuples(index=False)]
@@ -1087,8 +1139,9 @@ def df_pdf(df, title, hdr=""):
         fs, wid = _pdf_fit(data, ps[0], ps[1], m, 88 + off, bottom=bottom, fonts=fonts, bold_last=istot)
         if fs >= 6:
             break
-    t = Table(_pdf_clip(data, wid, fs, fonts, istot), colWidths=wid, repeatRows=1)
-    t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts)))
+    cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts)
+    t = Table(cl, colWidths=wid, repeatRows=rep_)
+    t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts) + extra))
     sty = getSampleStyleSheet()
     sm = ParagraphStyle("sm", parent=sty["Normal"], fontSize=8, leading=10)
     foot = lambda c, d: _draw_logo(c, ps[0], ps[1], m, lg)
@@ -1123,8 +1176,9 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
         rowh = max(8, min(rowh, (H - top - bottom) / len(data)))
     auto = min(11.0, max(4.5, rowh * 0.5))
     fs, wid = _pdf_fit(data, W, H, m, top, fsize if fsize > 0 else auto, check_h=False, fonts=fonts, fixed=fsize > 0, bold_last=istot)
-    t = Table(_pdf_clip(data, wid, fs, fonts, istot), colWidths=wid, rowHeights=[rowh] * len(data), repeatRows=1)
-    t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts)))
+    cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts)
+    t = Table(cl, colWidths=wid, rowHeights=[rowh] * len(cl), repeatRows=rep_)
+    t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra))
     lines = [(getattr(hdr, "co", "All"), "Helvetica-Bold", 17), (f"Sponsor / Kofil: {getattr(hdr, 'kofil', 'All')}", "Helvetica-Bold", 12),
              (getattr(hdr, "month", ""), "Helvetica-Bold", 11)]
 
@@ -1154,12 +1208,124 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
     return b.getvalue()
 
 
+def pay_xlsx(df, title, hdr):
+    """Excel sheet with the same layout as the printed payroll: Employee / Attendance / Salary / Remarks bands, boxes, TOTAL row."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter as L
+    d = fmt_dates(df)
+    cols = list(d.columns)
+    n = len(cols)
+    istot = len(d) > 0 and str(d.iloc[-1, 1 if cols[0] == "S/L" and n > 1 else 0]).upper().startswith("TOTAL")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Payroll"
+    thin, med = Side(style="thin", color="666666"), Side(style="medium", color="000000")
+    fill = lambda h: PatternFill("solid", fgColor=h.lstrip("#"))
+    head_f, tot_f = fill(S("pdf_head_bg")), fill(S("pdf_tot_bg"))
+    r0 = 1
+    for txt, sz in ((f"{getattr(hdr, 'co', '') or S('company')} - {title}", 14), (f"Sponsor / Kofil: {getattr(hdr, 'kofil', 'All')}   {getattr(hdr, 'month', '')}", 11)):
+        ws.merge_cells(start_row=r0, start_column=1, end_row=r0, end_column=n)
+        c = ws.cell(r0, 1, txt)
+        c.font, c.alignment = Font(bold=True, size=sz), Alignment(horizontal="center")
+        r0 += 1
+    g_row, h_row = r0 + 1, r0 + 2
+    sl = cols[0] == "S/L"
+    j = 2 if sl else 1
+    if sl:
+        ws.merge_cells(start_row=g_row, start_column=1, end_row=h_row, end_column=1)
+        ws.cell(g_row, 1, "S/L")
+    while j <= n:
+        g = _PGROUP.get(cols[j - 1])
+        k = j
+        while k < n and _PGROUP.get(cols[k]) == g:
+            k += 1
+        if g:
+            ws.merge_cells(start_row=g_row, start_column=j, end_row=g_row, end_column=k)
+            ws.cell(g_row, j, g)
+        j = k + 1
+    for ci, name in enumerate(cols, 1):
+        if not (sl and ci == 1):
+            ws.cell(h_row, ci, name)
+    for rr in (g_row, h_row):
+        for ci in range(1, n + 1):
+            c = ws.cell(rr, ci)
+            c.font, c.fill, c.alignment = Font(bold=True, color=S("pdf_head_fg").lstrip("#")), head_f, Alignment(horizontal="center", vertical="center", wrap_text=True)
+    first = h_row + 1
+    for ri, row in enumerate(d.itertuples(index=False), first):
+        for ci, v in enumerate(row, 1):
+            if isinstance(v, float) and v != v:
+                v = None
+            elif hasattr(v, "item"):
+                v = v.item()
+            c = ws.cell(ri, ci, v)
+            if isinstance(v, float):
+                c.number_format = "#,##0.00"
+    last = first + len(d) - 1
+    for ri in range(g_row, last + 1):
+        for ci in range(1, n + 1):
+            ws.cell(ri, ci).border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    if istot:
+        tr = ws.cell(last, 1 if cols[0] != "S/L" else 2).value
+        lab = next((str(v) for v in d.iloc[-1].tolist() if str(v).startswith("TOTAL")), "TOTAL")
+        kk = next((i + 1 for i, v in enumerate(d.iloc[-1].tolist()) if i > 0 and str(v) not in ("", "nan") and not str(v).startswith("TOTAL")), 0)
+        if kk > 2:
+            for ci in range(1, kk):
+                ws.cell(last, ci).value = None
+            ws.merge_cells(start_row=last, start_column=1, end_row=last, end_column=kk - 1)
+            ws.cell(last, 1, lab).alignment = Alignment(horizontal="center")
+        for ci in range(1, n + 1):
+            c = ws.cell(last, ci)
+            c.font, c.fill = Font(bold=True, color=S("pdf_tot_fg").lstrip("#")), tot_f
+    # medium box round every group
+    j = 2 if sl else 1
+    spans = [(1, 1)] if sl else []
+    while j <= n:
+        g = _PGROUP.get(cols[j - 1])
+        k = j
+        while k < n and _PGROUP.get(cols[k]) == g:
+            k += 1
+        spans.append((j, k))
+        j = k + 1
+    for a_, b_ in spans:
+        for ri in range(g_row, last + 1):
+            for ci in (a_, b_):
+                c = ws.cell(ri, ci)
+                b = c.border
+                c.border = Border(left=med if ci == a_ else b.left, right=med if ci == b_ else b.right,
+                                  top=med if ri == g_row else b.top, bottom=med if ri == last else b.bottom)
+        for ci in range(a_, b_ + 1):
+            c = ws.cell(g_row, ci); b = c.border
+            c.border = Border(left=b.left, right=b.right, top=med, bottom=b.bottom)
+            c = ws.cell(last, ci); b = c.border
+            c.border = Border(left=b.left, right=b.right, top=b.top, bottom=med)
+    for ci, name in enumerate(cols, 1):
+        w = max([len(str(name))] + [len(f"{v:,.2f}") if isinstance(v, float) and v == v else len(str(v)) for v in d.iloc[:, ci - 1].head(300)])
+        ws.column_dimensions[L(ci)].width = min(max(w + 2, 5), 28)
+    ws.freeze_panes = ws.cell(first, 4 if sl else 3)
+    ws.page_setup.orientation, ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = "landscape", 1, 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    fr = last + 2
+    ws.cell(fr, 1, "Prepared by").font = Font(size=9)
+    ws.cell(fr + 1, 1, str(S("prepared_by") or "")).font = Font(bold=True)
+    for k_, (spn_, name_) in enumerate(getattr(hdr, "appr", [])):
+        col = max(n - 2 - 4 * k_, 3)
+        ws.cell(fr, col, "Approved by" + (f" ({spn_})" if len(getattr(hdr, "appr", [])) > 1 else "")).font = Font(size=9)
+        ws.cell(fr + 1, col, name_).font = Font(bold=True)
+    b = io.BytesIO()
+    wb.save(b)
+    return b.getvalue()
+
+
 def download(df, name, hdr="", uid=""):
     df = add_total(df)
     if not isinstance(hdr, Hdr):
         hdr = Hdr(str(hdr))
     hdr.appr = approvers(hdr, df)
-    c = st.columns([1, 1.3, 1.3, 6])
+    c = st.columns([1, 1.3, 1.3, 1.4, 5])
+    if _is_pay(df.columns):
+        c[3].download_button("⬇ Excel (sheet)", pay_xlsx(df, name.replace("_", " "), hdr), f"{name}_{today()}.xlsx",
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="xl_" + name + uid)
     c[0].download_button("⬇ CSV", df.to_csv(index=False).encode("utf-8-sig"), f"{name}_{today()}.csv", "text/csv",
                          key="csv_" + name + uid)
     try:
