@@ -1309,7 +1309,7 @@ PAY_GROUPS = [
     ("Attendance Details", ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs"]),
     ("Salary Details", ["Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay",
                         "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net"]),
-    ("Remarks", ["Bank", "Cash", "Signature", "Finger", "Sal. Creat"])]
+    ("Remarks", ["Bank", "Cash", "Signature", "Finger", "W.Place"])]
 _PGROUP = {c: g for g, cs in PAY_GROUPS for c in cs}
 
 
@@ -1634,8 +1634,8 @@ def download(df, name, hdr="", uid=""):
 PCOLS = ["Code", "Name", "Join Date", "Iqama ID", "Passport No", "Company", "Section", "Sponsor", "Labour", "Pay", "Mode",
          "Monthly Basic Rate", "Hr Rate", "OT Rate", "Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs",
          "Hol Hrs", "Total Hrs", "Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days",
-         "Ex.hrs Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice", "Sal. Creat"]
-PVIEW = [c for c in PCOLS if c not in ("Invoice", "Sal. Creat")]
+         "Ex.hrs Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice", "W.Place"]
+PVIEW = [c for c in PCOLS if c not in ("Invoice", "W.Place")]
 SUMC = ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs", "Basic", "Food",
         "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay", "Allowances", "Bonus",
         "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice"]
@@ -1651,8 +1651,8 @@ def view_pay(p):
     for c in ("Monthly Basic Rate", "Hr Rate"):
         d[c] = d[c].where(d[c] != 0, "")
     d = sign(d)
-    if "Sal. Creat" in p.columns and (p["Sal. Creat"].astype(str) != "").any():   # transferred worker: 2nd / 3rd salary line
-        d["Sal. Creat"] = p["Sal. Creat"].values
+    if "W.Place" in p.columns and (p["W.Place"].astype(str) != "").any():   # transferred worker: 2nd / 3rd salary line
+        d["W.Place"] = p["W.Place"].values
     return d
 
 
@@ -1836,18 +1836,18 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
                           "Other Allow": oth, "OT Pay": ot_pay, "Wknd OT": wk_pay, "Hol Pay": hol_pay, "Ex Days": ex_days,
                           "Ex.hrs Pay": ex_pay, "Allowances": add, "Bonus": bonus, "Advance": adv, "Absent Ded": abs_ded,
                           "Deduction": ded, "Net": net, "Bank": net if r.pay_mode == "Bank" else 0,
-                          "Cash": net if r.pay_mode != "Bank" else 0, "Invoice": tot_h * r.bill_rate, "Sal. Creat": ""})
+                          "Cash": net if r.pay_mode != "Bank" else 0, "Invoice": tot_h * r.bill_rate, "W.Place": ""})
         if merge and len(erows) > 1:   # transferred inside the period: one line, shown at the LAST workplace
             lastr = max(R, key=lambda x: x[0])
             m0 = dict(erows[0])
             for k_ in SUMC:
                 m0[k_] = sum(x[k_] for x in erows)
             m0["Company"], m0["Section"], m0["Sponsor"] = nm(cn, lastr[4]), nm(sn, lastr[5]), nm(kn, lastr[6])
-            m0["Sal. Creat"] = f"W.Place {len(erows)}"     # worked at 2 / 3 places: one salary line, remark says how many
+            m0["W.Place"] = f"W.Place {len(erows)}"     # worked at 2 / 3 places: one salary line, remark says how many
             erows = [m0]
         elif len(erows) > 1:           # transferred: one salary line per workplace, numbered in the Remarks column
             for i_, er_ in enumerate(erows, 1):
-                er_["Sal. Creat"] = "Sal. Creat" if i_ == 1 else f"Sal. Creat {i_}"
+                er_["W.Place"] = f"W.Place {i_}"
         rows.extend(erows)
     df = pd.DataFrame(rows, columns=PCOLS).round(2)
     for col, v in (("Section", sec), ("Company", co), ("Sponsor", spn)):
