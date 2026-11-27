@@ -404,8 +404,17 @@ def pw(p):
     return hashlib.sha256(("hrm$" + p).encode()).hexdigest()
 
 
-def rate_steps(join, d, ny, rep):
-    """Increments due on day d: one per completed `ny` years of service (rep) or just one."""
+def _inc_since():
+    try:
+        return date.fromisoformat(str(S("inc_from"))[:10])
+    except ValueError:
+        return None
+
+
+def rate_steps(join, d, ny, rep, since="x"):
+    """Increments due on day d: one per completed `ny` years of service (rep) or just one.
+    Workers who had ALREADY completed `ny` years on the cut-off date `since` (Settings) get no automatic increase;
+    workers who complete their years after that date get it."""
     if ny <= 0 or not join:
         return 0
     try:
@@ -413,7 +422,14 @@ def rate_steps(join, d, ny, rep):
     except ValueError:
         return 0
     y = d.year - jd.year - ((d.month, d.day) < (jd.month, jd.day))
-    return 0 if y < ny else (y // ny if rep else 1)
+    k_max = 0 if y < ny else (y // ny if rep else 1)
+    if since == "x":
+        since = _inc_since()
+    if since and k_max:
+        ys = since.year - jd.year - ((since.month, since.day) < (jd.month, jd.day))   # service completed on the cut-off date
+        if ys >= ny:                      # already completed the years before the cut-off: no automatic increase
+            return 0
+    return k_max
 
 
 def eff_rate(rate, join, d):
@@ -638,9 +654,9 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-27c"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-27d"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": ""}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": "", "inc_from": "2026-11-27"}
 
 
 def init():
@@ -673,7 +689,7 @@ def init():
         from_sponsor INT, to_company INT, to_dept INT, to_sponsor INT, note TEXT)""", fetch=False)
     for t_, c_ in [("employees", "id_expiry TEXT"), ("employees", "company_id INT"), ("employees", "food_allow REAL DEFAULT 0"),
                    ("employees", "ot_rate REAL DEFAULT 0"), ("employees", "bill_rate REAL DEFAULT 0"),
-                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT"), ("users", "lock_ok INT DEFAULT 0")]:
+                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT"), ("users", "lock_ok INT DEFAULT 0"), ("companies", "cycle_month TEXT DEFAULT 'Start'")]:
         try:
             q(f"ALTER TABLE {t_} ADD COLUMN {c_}", fetch=False)
         except Exception:
@@ -824,8 +840,11 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
           "November", "December"]
 
 
-def cycle_range(y, m, cday):
-    """Pay period of the month named by its START: day 21 of November -> 20 December."""
+def cycle_range(y, m, cday, mode="Start"):
+    """Pay period of the month m. mode 'Start': the month is named by the START date (day 21 of November -> 20 December).
+    mode 'Closing': the month is named by the CLOSING date (December -> 21 November to 20 December)."""
+    if mode == "Closing" and int(cday or 1) > 1:
+        y, m = (y - 1, 12) if m == 1 else (y, m - 1)
     start = date(y, m, min(max(int(cday or 1), 1), 28))
     ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
     return start, date(ny, nm, start.day) - timedelta(days=1)
@@ -833,11 +852,11 @@ def cycle_range(y, m, cday):
 
 def pay_groups(y, m, co):
     """[(start, end, [companies])] - companies with the same pay cycle share one period."""
-    cm = q("SELECT name, COALESCE(cycle_day,1) AS cd FROM companies")
-    cd = dict(zip(cm.name, cm.cd))
+    cm = q("SELECT name, COALESCE(cycle_day,1) AS cd, COALESCE(cycle_month,'Start') AS cmo FROM companies")
+    cd, cmo = dict(zip(cm.name, cm.cd)), dict(zip(cm.name, cm.cmo))
     groups = {}
     for n in (co or cm.name.tolist()):
-        groups.setdefault(cycle_range(y, m, cd.get(n, 1)), []).append(n)
+        groups.setdefault(cycle_range(y, m, cd.get(n, 1), cmo.get(n, "Start")), []).append(n)
     if not co:   # staff with no company assigned yet
         groups.setdefault(cycle_range(y, m, 1), []).append("-")
     return [(str(a), str(b), v) for (a, b), v in sorted(groups.items())]
@@ -973,18 +992,22 @@ def _pay_html(d):
         return (f"border-left:3px solid {hf};" if i == 0 or g_(i) != g_(i - 1) else "") + \
                (f"border-right:3px solid {hf};" if i == n - 1 or g_(i) != g_(i + 1) else "")
 
-    def cell(v, i):
+    red = set(_red_rows(d))                    # more than 1 absent day: Net amount in red
+    net_i = cols.index("Net") if "Net" in cols else -1
+
+    def cell(v, i, rd=False):
+        sd = side(i) + ("color:#d00000;font-weight:800;" if rd and i == net_i else "")
         if isinstance(v, float):
-            c = f'<td class="r" style="{side(i)}">' + (f"{v:,.2f}" if v == v else "") + "</td>"
+            c = f'<td class="r" style="{sd}">' + (f"{v:,.2f}" if v == v else "") + "</td>"
         elif isinstance(v, (int,)) and not isinstance(v, bool) or hasattr(v, "item") and not isinstance(v, str):
             vv = v.item() if hasattr(v, "item") else v
-            c = f'<td class="r" style="{side(i)}">' + (f"{vv:,.2f}" if isinstance(vv, float) and vv == vv else "" if isinstance(vv, float) else str(vv)) + "</td>"
+            c = f'<td class="r" style="{sd}">' + (f"{vv:,.2f}" if isinstance(vv, float) and vv == vv else "" if isinstance(vv, float) else str(vv)) + "</td>"
         else:
-            c = f'<td style="{side(i)}">{html.escape(str(v))}</td>'
+            c = f'<td style="{sd}">{html.escape(str(v))}</td>'
         return c
 
     rows = []
-    for r in d.itertuples(index=False):
+    for ri_, r in enumerate(d.itertuples(index=False)):
         vals = list(r)
         tot = any(str(v).startswith("TOTAL") for v in vals)
         if tot:
@@ -995,7 +1018,7 @@ def _pay_html(d):
                 tds += "".join(cell(v, i) for i, v in enumerate(vals) if i >= kk)
                 rows.append(f'<tr class="t">{tds}</tr>')
                 continue
-        tds = "".join(cell(v, i) for i, v in enumerate(vals))
+        tds = "".join(cell(v, i, ri_ in red) for i, v in enumerate(vals))
         rows.append(f'<tr class="t">{tds}</tr>' if tot else f"<tr>{tds}</tr>")
     css = (f'<style>.pt td{{border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap}}.pt td.r{{text-align:right}}.pt th{{font-weight:800!important}}'
            f'.pt tr.t td{{background:{tb};color:{tf};font-weight:800;border-top:2px solid {hf};border-bottom:2px solid {hf}}}</style>')
@@ -1380,6 +1403,26 @@ def _pdf_data(df, cap=40):
     return [[str(c) for c in df.columns]] + [[fmt(v)[:cap] for v in row] for row in df.itertuples(index=False)]
 
 
+def _red_rows(d):
+    """Positions (0-based, TOTAL row excluded) of the payroll lines with more than 1 absent day -> their Net is marked red."""
+    if "Absent" not in d.columns or "Net" not in d.columns:
+        return []
+    ab = pd.to_numeric(d["Absent"], errors="coerce").fillna(0).tolist()
+    return [i for i, (v, row) in enumerate(zip(ab, d.itertuples(index=False))) if v > 1 and not any(str(x).startswith("TOTAL") for x in row)]
+
+
+def _red_pdf(d, data, rep_):
+    from reportlab.lib import colors
+    if "Net" not in data[0]:
+        return []
+    ni, off = data[0].index("Net"), rep_ - 1 if rep_ > 1 else 0
+    out = []
+    for i in _red_rows(d):
+        r = i + 1 + off
+        out += [("TEXTCOLOR", (ni, r), (ni, r), colors.HexColor("#d00000"))]
+    return out
+
+
 def df_pdf(df, title, hdr=""):
     """One landscape page whenever possible; every column is as wide as its text, nothing overlaps."""
     from reportlab.lib.pagesizes import A3, A4, landscape
@@ -1399,7 +1442,7 @@ def df_pdf(df, title, hdr=""):
             break
     cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
     t = Table(cl, colWidths=wid, repeatRows=rep_)
-    t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts) + extra))
+    t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts) + extra + _red_pdf(df, data, rep_)))
     sty = getSampleStyleSheet()
     sm = ParagraphStyle("sm", parent=sty["Normal"], fontSize=8, leading=10)
     foot = lambda c, d: _draw_logo(c, ps[0], ps[1], m, lg)
@@ -1438,7 +1481,7 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
     fs, wid = _pdf_fit(data, W, H, m, top, fsize if fsize > 0 else auto, check_h=False, fonts=fonts, fixed=fsize > 0, bold_last=istot)
     cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
     t = Table(cl, colWidths=wid, rowHeights=[max(rowh, fs + 6) if (rep_ == 2 and i_ == 0) else rowh for i_ in range(len(cl))], repeatRows=rep_)
-    t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra))
+    t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra + _red_pdf(d, data, rep_)))
     lines = [(getattr(hdr, "co", "All"), "Helvetica-Bold", 17), (f"Sponsor / Kofil: {getattr(hdr, 'kofil', 'All')}", "Helvetica-Bold", 12),
              (getattr(hdr, "month", ""), "Helvetica-Bold", 11)]
 
@@ -1548,6 +1591,10 @@ def pay_xlsx(df, title, hdr):
             if isinstance(v, float):
                 c.number_format = "#,##0.00"
     last = first + len(d) - 1
+    if "Net" in cols:                          # more than 1 absent day: Net amount in red
+        for i_ in _red_rows(d):
+            c = ws.cell(first + i_, cols.index("Net") + 1)
+            c.font = Font(bold=True, color="D00000")
     for ri in range(g_row, last + 1):
         for ci in range(1, n + 1):
             ws.cell(ri, ci).border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -1705,6 +1752,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
     std, otm, we = float(S("std_hours")), float(S("ot_mult")), int(S("weekend"))
     gp, gn = float(S("gosi_pct")), S("gosi_nat").strip().lower()
     inc_y, inc_a, inc_rep = int(float(S("inc_years"))), float(S("inc_amount")), S("inc_repeat") == "Yes"
+    inc_since = _inc_since()
     D1, D2 = date.fromisoformat(d1), date.fromisoformat(d2)
     by_emp, adj_by = {}, {}
     for t in att.itertuples(index=False):
@@ -1747,7 +1795,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
 
         def rt(ds):   # monthly basic in force on that day
             if ds not in rtm:
-                rtm[ds] = r.rate + inc_a * rate_steps(r.join_date, date.fromisoformat(ds), inc_y, inc_rep)
+                rtm[ds] = r.rate + inc_a * rate_steps(r.join_date, date.fromisoformat(ds), inc_y, inc_rep, inc_since)
             return rtm[ds]
 
         bm = {}
@@ -1978,6 +2026,22 @@ if _restricted:          # this user has his own menu list (set by Admin in Sett
 MENU = [m_ for m_ in MENU if m_ != "Bulk Attendance" or S("bulk_on") == "Yes"]
 st.sidebar.title(f"🏢 {S('company')}")
 st.sidebar.write(f"👤 {st.session_state.user} ({role})")
+st.sidebar.markdown("""<style>
+section[data-testid="stSidebar"] .st-key-logout button{width:100%;padding:.75rem 1rem;font-size:1.1rem;font-weight:800;letter-spacing:.5px;color:#fff;
+ background:linear-gradient(135deg,#e11d48,#be123c);border:0;border-radius:14px;box-shadow:0 4px 14px rgba(225,29,72,.45);transition:all .15s}
+section[data-testid="stSidebar"] .st-key-logout button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(225,29,72,.6);color:#fff;background:linear-gradient(135deg,#f43f5e,#be123c)}
+section[data-testid="stSidebar"] .st-key-logout button:active{transform:translateY(0)}
+</style>""", unsafe_allow_html=True)
+if st.sidebar.button("⏻  Log out", key="logout", use_container_width=True):
+    _audit_raw(st.session_state.user, "Logout", "", "signed out")
+    st.session_state.clear()
+    st.rerun()
+ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
+        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑", "Audit Log": "📜"}
+page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
+if st.session_state.get("_lastpage") != page:
+    st.session_state["_lastpage"] = page
+    _act("Opened menu", page, page)
 _ld = S("lock_date")
 _can_lock = st.session_state.role == "Admin" or st.session_state.get("_lockok")
 with st.sidebar.expander(f"🔒 Lock date: {_ld}" if _ld else "🔓 Lock date: none"):
@@ -1999,16 +2063,6 @@ with st.sidebar.expander(f"🔒 Lock date: {_ld}" if _ld else "🔓 Lock date: n
         st.write(f"Locked up to **{_ld}**. Records on or before this date cannot be added, changed or deleted." if _ld
                  else "No lock date is set.")
         st.caption("Only the Admin, or a user the Admin permits, can lock / unlock.")
-if st.sidebar.button("Logout"):
-    _audit_raw(st.session_state.user, "Logout", "", "signed out")
-    st.session_state.clear()
-    st.rerun()
-ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
-        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑", "Audit Log": "📜"}
-page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
-if st.session_state.get("_lastpage") != page:
-    st.session_state["_lastpage"] = page
-    _act("Opened menu", page, page)
 _pf = _perm.get(page) if _restricted else None
 if _pf is None:                         # no personal setting: the role decides (Admin / HR edit, Admin delete)
     _CAN_E, _CAN_D = role in ("Admin", "HR"), role == "Admin"
@@ -2368,11 +2422,14 @@ elif page == "Setup":
         st.subheader("Client companies")
         n, v = st.text_input("Company name"), st.text_input("VAT / Tax no")
         cdy = st.number_input("Pay cycle start day (1 = whole month, 21 = 21st to 20th)", 1, 28, 1)
+        cmo_ = st.selectbox("Month of the salary is named by (e.g. cycle 21 Nov - 20 Dec)",
+                            ["Start date month  (Nov 21 - Dec 20 = November)", "Closing date month  (Nov 21 - Dec 20 = December)"], index=0)
         exm = st.selectbox("Extra-hour pay (a day over N hours pays 1 hour of basic)", ["Off", "Instead of OT", "Plus OT"])
         exh = st.number_input("... N = hours per day", 1.0, 24.0, 10.0)
         if st.button("Add company") and n:
-            q("INSERT INTO companies(name,vat,cycle_day,exh_mode,exh_hours) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING", (n, v, int(cdy), exm, float(exh)), fetch=False); st.rerun()
-        tbl(q("SELECT name, vat, cycle_day, exh_mode, exh_hours FROM companies"), False)
+            q("INSERT INTO companies(name,vat,cycle_day,cycle_month,exh_mode,exh_hours) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+              (n, v, int(cdy), "Closing" if cmo_.startswith("Closing") else "Start", exm, float(exh)), fetch=False); st.rerun()
+        tbl(q("SELECT name, vat, cycle_day, cycle_month, exh_mode, exh_hours FROM companies"), False)
     with c2:
         st.subheader("Sections")
         n = st.text_input("New section")
@@ -2920,13 +2977,19 @@ elif page == "Settings":
         iy = st.number_input("Basic increase: after every how many years of service", 0, 20, int(float(S("inc_years"))))
         ia = st.number_input("Basic increase: amount added to the monthly basic (0 = off)", 0.0, 100000.0, float(S("inc_amount")))
         ir = st.selectbox("Repeat the increase after every such period? (No = only once)", ["Yes", "No"], 0 if S("inc_repeat") == "Yes" else 1)
+        try:
+            _if = date.fromisoformat(str(S("inc_from"))[:10])
+        except ValueError:
+            _if = date(2026, 11, 27)
+        ifr = st.date_input("Auto increase cut-off date: workers who have ALREADY completed the years above on this date get NO automatic increase; "
+                            "workers who will complete the years after this date get it", _if)
         bk = st.selectbox("Show the Bulk Attendance menu (enter many days at once)", ["Yes", "No"], 0 if S("bulk_on") == "Yes" else 1)
         c = st.columns(2)
         mon = c[0].selectbox("Dashboard scrolling text (ON / OFF)", ["Yes", "No"], 0 if S("marquee_on") == "Yes" else 1)
         mtx = c[1].text_input("Dashboard scrolling text", S("marquee_text"))
         if st.form_submit_button("Save"):
             for k, v in dict(company=co, currency=cu, timezone=tz, std_hours=sh, work_days=wd,
-                             ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, bulk_on=bk, marquee_on=mon, marquee_text=mtx).items():
+                             ot_mult=ot, date_fmt=df_, gosi_pct=gp, gosi_nat=gn, vat_pct=vp, weekend=days.index(wk), def_normal=dn, def_ot=do_, inc_years=iy, inc_amount=ia, inc_repeat=ir, inc_from=str(ifr), bulk_on=bk, marquee_on=mon, marquee_text=mtx).items():
                 q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
             st.success("Saved"); st.rerun()
     st.divider()
@@ -3267,8 +3330,9 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
     elif page == "Setup":
         t1, t2, t3 = st.tabs(["Companies", "Sections", "Sponsors / Kofil"])
         with t1:
-            manage("companies", "SELECT id, name, vat, cycle_day, exh_mode, exh_hours FROM companies ORDER BY name", edit=["name", "vat", "cycle_day", "exh_mode", "exh_hours"],
-                   selects={"exh_mode": ["Off", "Instead of OT", "Plus OT"]},
+            manage("companies", "SELECT id, name, vat, cycle_day, COALESCE(cycle_month,'Start') AS cycle_month, exh_mode, exh_hours FROM companies ORDER BY name",
+                   edit=["name", "vat", "cycle_day", "cycle_month", "exh_mode", "exh_hours"],
+                   selects={"exh_mode": ["Off", "Instead of OT", "Plus OT"], "cycle_month": ["Start", "Closing"]},
                    used_in=[("employees", "company_id"), ("attendance", "company_id"), ("costs", "company_id"), ("transfers", "from_company"), ("transfers", "to_company")], key="mco")
         with t2:
             manage("departments", "SELECT id, name FROM departments ORDER BY name", edit=["name"],
