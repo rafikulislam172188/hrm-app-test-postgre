@@ -767,7 +767,7 @@ def _pay_html(d):
     n = len(cols)
     hb, hf, tb, tf = S("pdf_head_bg"), S("pdf_head_fg"), S("pdf_tot_bg"), S("pdf_tot_fg")
     sl = cols[0] == "S/L"
-    th = f"background:{hb};color:{hf};border:1px solid #9aa5a0;padding:3px 6px;text-align:center;position:sticky;"
+    th = f"background:{hb};color:{hf};border:1px solid #9aa5a0;padding:3px 6px;text-align:center;font-weight:800;position:sticky;"
     top1 = ""
     j = 1 if sl else 0
     if sl:
@@ -789,7 +789,7 @@ def _pay_html(d):
                       for v in r)
         rows.append(f'<tr class="t">{tds}</tr>' if tot else f"<tr>{tds}</tr>")
     css = (f'<style>.pt td{{border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap}}.pt td.r{{text-align:right}}'
-           f'.pt tr.t td{{background:{tb};color:{tf};font-weight:800}}</style>')
+           f'.pt th{{font-weight:800!important}}.pt tr.t td{{background:{tb};color:{tf};font-weight:800}}</style>')
     st.markdown(css + f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table class="pt" style="border-collapse:collapse;'
                 f'font-size:12px;width:100%"><thead><tr>{top1}</tr><tr>{top2}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
                 unsafe_allow_html=True)
