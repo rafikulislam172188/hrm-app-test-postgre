@@ -934,7 +934,7 @@ def _bank_editor(p, a, gi):
 
 def pm_filter(p, key):
     """Payroll lines of the chosen Payment type. Bank salary = Bank workers + the Bank part of 'Both' workers;
-    Cash salary = Cash workers + the Cash part of 'Both' workers. The other column of a 'Both' worker is shown as 0."""
+    Cash salary = Cash workers + the Cash part of 'Both' workers. A 'Both' worker keeps BOTH his Bank and his Cash amount visible."""
     m = st.session_state.get("_pm_" + key, "All")
     if m == "All" or p.empty or "Mode" not in p.columns:
         return p
@@ -943,11 +943,9 @@ def pm_filter(p, key):
     if m == "Bank salary":
         keep = (p["Mode"] == "Bank") | (both & (p["Bank"] > 0))
         p = p[keep]
-        p.loc[p["Mode"] == "Both", "Cash"] = 0.0
     else:
         keep = ~p["Mode"].isin(["Bank", "Both"]) | (both & (p["Cash"] > 0))
         p = p[keep]
-        p.loc[p["Mode"] == "Both", "Bank"] = 0.0
     return p
 
 
