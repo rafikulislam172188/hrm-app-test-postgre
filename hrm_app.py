@@ -762,37 +762,64 @@ def add_total(df, total=True):
 
 
 def _pay_html(d):
-    """Payroll sheet on screen: Employee / Attendance / Salary / Remarks bands, boxed groups, coloured TOTAL row."""
+    """Payroll sheet on screen - same layout as the printed sheet: Employee / Attendance / Salary / Remarks bands,
+    boxed groups, S/L spanning both heading rows, TOTAL (n) centred over the label columns, coloured TOTAL row."""
     cols = list(d.columns)
     n = len(cols)
     hb, hf, tb, tf = S("pdf_head_bg"), S("pdf_head_fg"), S("pdf_tot_bg"), S("pdf_tot_fg")
     sl = cols[0] == "S/L"
-    th = f"background:{hb};color:{hf};border:1px solid #9aa5a0;padding:3px 6px;text-align:center;font-weight:800;position:sticky;"
-    top1 = ""
+    th = f"background:{hb};color:{hf};border:1px solid {hf};padding:3px 6px;text-align:center;font-weight:800;position:sticky;"
+    top1, edge = "", {0: 1} if sl else {}
     j = 1 if sl else 0
     if sl:
-        top1 += f'<th rowspan="2" style="{th}top:0;border-right:2px solid {hf}">S/L</th>'
+        top1 += f'<th rowspan="2" style="{th}top:0;border:2px solid {hf}">S/L</th>'
     while j < n:
         g = _PGROUP.get(cols[j])
         k = j
         while k + 1 < n and _PGROUP.get(cols[k + 1]) == g:
             k += 1
-        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border-left:2px solid {hf};border-right:2px solid {hf}">{html.escape(g or "")}</th>'
+        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border:2px solid {hf}">{html.escape(g or "")}</th>'
+        edge[j], edge[k] = 1, 1
         j = k + 1
-    top2 = "".join(f'<th style="{th}top:24px;white-space:nowrap">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
+    top2 = "".join(f'<th style="{th}top:25px;white-space:nowrap">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
+
+    def side(i):
+        g_ = lambda x: None if x < 0 or x >= n else (cols[x] == "S/L", _PGROUP.get(cols[x]))
+        return (f"border-left:2px solid {hf};" if i == 0 or g_(i) != g_(i - 1) else "") + \
+               (f"border-right:2px solid {hf};" if i == n - 1 or g_(i) != g_(i + 1) else "")
+
+    def cell(v, i):
+        if isinstance(v, float):
+            c = f'<td class="r" style="{side(i)}">' + (f"{v:,.2f}" if v == v else "") + "</td>"
+        elif isinstance(v, (int,)) and not isinstance(v, bool) or hasattr(v, "item") and not isinstance(v, str):
+            vv = v.item() if hasattr(v, "item") else v
+            c = f'<td class="r" style="{side(i)}">' + (f"{vv:,.2f}" if isinstance(vv, float) and vv == vv else "" if isinstance(vv, float) else str(vv)) + "</td>"
+        else:
+            c = f'<td style="{side(i)}">{html.escape(str(v))}</td>'
+        return c
+
     rows = []
     for r in d.itertuples(index=False):
-        tot = any(str(v).startswith("TOTAL") for v in r)
-        tds = "".join((f'<td class="r">{v:,.2f}</td>' if isinstance(v, float) and v == v else
-                       '<td class="r"></td>' if isinstance(v, float) else
-                       f'<td class="r">{v}</td>' if isinstance(v, int) and not isinstance(v, bool) else f"<td>{html.escape(str(v))}</td>")
-                      for v in r)
+        vals = list(r)
+        tot = any(str(v).startswith("TOTAL") for v in vals)
+        if tot:
+            lab = next(str(v) for v in vals if str(v).startswith("TOTAL"))
+            kk = next((i for i, v in enumerate(vals) if i > 0 and str(v) not in ("", "nan", "None") and not str(v).startswith("TOTAL")), 0)
+            if kk > 1:
+                tds = f'<td colspan="{kk}" style="text-align:center;border-left:2px solid {hf};border-right:2px solid {hf}">{html.escape(lab)}</td>'
+                tds += "".join(cell(v, i) for i, v in enumerate(vals) if i >= kk)
+                rows.append(f'<tr class="t">{tds}</tr>')
+                continue
+        tds = "".join(cell(v, i) for i, v in enumerate(vals))
         rows.append(f'<tr class="t">{tds}</tr>' if tot else f"<tr>{tds}</tr>")
-    css = (f'<style>.pt td{{border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap}}.pt td.r{{text-align:right}}'
-           f'.pt th{{font-weight:800!important}}.pt tr.t td{{background:{tb};color:{tf};font-weight:800}}</style>')
-    st.markdown(css + f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table class="pt" style="border-collapse:collapse;'
-                f'font-size:12px;width:100%"><thead><tr>{top1}</tr><tr>{top2}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
-                unsafe_allow_html=True)
+    css = (f'<style>.pt td{{border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap}}.pt td.r{{text-align:right}}.pt th{{font-weight:800!important}}'
+           f'.pt tr.t td{{background:{tb};color:{tf};font-weight:800;border-top:2px solid {hf};border-bottom:2px solid {hf}}}</style>')
+    page = (css + f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table class="pt" style="border-collapse:collapse;'
+            f'font-size:12px;width:100%"><thead><tr>{top1}</tr><tr>{top2}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+    if hasattr(st, "html"):
+        st.html(page)
+    else:
+        st.markdown(page, unsafe_allow_html=True)
 
 
 def tbl(df, total=True):
