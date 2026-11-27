@@ -170,6 +170,172 @@ def _guard(sql):
         st.stop()
 
 
+# ---------------- Lock date + audit log (every save / change / delete is recorded with the user name)
+_LOCK_T = {"attendance": ("day",), "adjustments": ("day",), "costs": ("day",), "transfers": ("day",),
+           "leaves": ("start", '"end"'), "holidays": ("from_day", "to_day")}
+_DRE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TRE = re.compile(r"\s*(INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+\"?([A-Za-z_]+)", re.I)
+
+
+def _tbl_of(sql):
+    m = _TRE.match(sql)
+    return (m.group(1).split()[0].upper(), m.group(2).lower()) if m else (None, None)
+
+
+def _who():
+    return st.session_state.get("user") if hasattr(st.session_state, "get") else None
+
+
+def _lock_date():
+    try:
+        r = _run("SELECT v FROM settings WHERE k='lock_date'", (), True)
+        return str(r.iloc[0, 0]).strip() if len(r) and r.iloc[0, 0] else ""
+    except Exception:
+        return ""
+
+
+def _stop_locked(ld):
+    st.error(f"🔒 Dates up to {ld} are LOCKED by the Admin - nobody can add, change or delete records on or before that date. "
+             "Ask the Admin to move or remove the lock date (navigation bar, left).")
+    st.stop()
+
+
+def _pre_write(sql, p):
+    """Before a save: enforce the lock date and remember the old row(s) for the audit log. Returns the audit context."""
+    try:
+        act, t = _tbl_of(sql)
+        if not t or t == "audit_log" or not _who():
+            return None
+        ld = "" if (st.session_state.get("role") == "Admin" or st.session_state.get("_lockok")) else (_lock_date() if t in _LOCK_T else "")
+        old, p = None, tuple(p)
+        if act in ("UPDATE", "DELETE") and t not in ("settings", "users"):
+            m = re.search(r"\bWHERE\b(.*)$", sql, re.I | re.S)
+            if m:
+                k = m.group(1).count("?")
+                old = _run(f"SELECT * FROM {t} WHERE{m.group(1)}", p[len(p) - k:] if k else (), True)
+        if ld:
+            isd = lambda x: isinstance(x, str) and bool(_DRE.match(x)) and x <= ld
+            if act == "INSERT":
+                bad = any(isd(x) for x in p)
+            else:
+                cols = [c.strip('"') for c in _LOCK_T[t]]
+                bad = old is not None and any(isd(v) for c in cols if c in old.columns for v in old[c])
+                if not bad and act == "UPDATE":        # the new values written by the UPDATE (before the WHERE part)
+                    nw = sql.upper().rsplit("WHERE", 1)[-1].count("?") if "WHERE" in sql.upper() else 0
+                    bad = any(isd(x) for x in p[:len(p) - nw])
+            if bad:
+                _stop_locked(ld)
+        return (act, t, sql, p, old)
+    except Exception as ex:                      # never break real work because of the checks themselves
+        if type(ex).__name__ in ("StopException", "RerunException"):
+            raise
+        return None
+
+
+def _emp_label(eid):
+    try:
+        r = _run("SELECT code, name FROM employees WHERE id=?", (int(eid),), True)
+        return f"{r.code[0]} {r['name'][0]}" if len(r) else ""
+    except Exception:
+        return ""
+
+
+def _short(v):
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    t = str(v)
+    return t if len(t) <= 40 else t[:37] + "..."
+
+
+def _pairs(cols, vals):
+    return ", ".join(f"{c}={_short(v)}" for c, v in zip(cols, vals) if _short(v) not in (None, ""))
+
+
+def _audit_raw(usr, action, tbl, detail):
+    try:
+        ts = datetime.now(ZoneInfo(DEFAULTS["timezone"] if not _tz_ok() else _tz_ok())).strftime("%Y-%m-%d %H:%M:%S")
+        _run("INSERT INTO audit_log(ts, usr, action, tbl, detail) VALUES(?,?,?,?,?)", (ts, usr or "?", action, tbl, str(detail)[:900]), False)
+    except Exception:
+        pass
+
+
+def _tz_ok():
+    try:
+        r = _run("SELECT v FROM settings WHERE k='timezone'", (), True)
+        return str(r.iloc[0, 0]) if len(r) else ""
+    except Exception:
+        return ""
+
+
+def _post_write(ctx):
+    if not ctx:
+        return
+    try:
+        act, t, sql, p, old = ctx
+        if t == "settings":
+            k_ = str(p[0]) if p else ""
+            v_ = "(logo image)" if k_ == "logo_b64" else _short(p[1] if len(p) > 1 else "")
+            _audit_raw(_who(), "Settings", t, f"{k_} = {v_}")
+            return
+        if t == "users":
+            _audit_raw(_who(), act.title(), t, f"user {p[0] if act == 'INSERT' and p else (p[-1] if p else '')} (password / access data hidden)")
+            return
+        emp, det = "", ""
+        if act == "INSERT":
+            m = re.search(r"INTO\s+\"?\w+\"?\s*\(([^)]*)\)", sql, re.I)
+            cols = [c.strip().strip('"') for c in m.group(1).split(",")] if m else []
+            if len(cols) == len(p):
+                det = _pairs(cols, p)
+                if "emp_id" in cols:
+                    emp = _emp_label(p[cols.index("emp_id")])
+        else:
+            if old is not None and len(old):
+                r0 = old.iloc[0]
+                det = f"{len(old)} row(s): " + _pairs(list(old.columns), list(r0))
+                if "emp_id" in old.columns:
+                    emp = _emp_label(r0["emp_id"])
+                elif t == "employees":
+                    emp = f"{r0.get('code', '')} {r0.get('name', '')}"
+            if act == "UPDATE":
+                m = re.search(r"\bSET\b(.*?)\bWHERE\b", sql, re.I | re.S)
+                sc = re.findall(r"\"?([A-Za-z_]+)\"?\s*=\s*(?:\?|COALESCE|excluded)", m.group(1)) if m else []
+                nv = p[:len(sc)]
+                if sc and len(nv) == len(sc):
+                    det = "NEW: " + _pairs(sc, nv) + " | OLD: " + det
+        _audit_raw(_who(), act.title(), t, (f"[{emp}] " if emp.strip() else "") + det)
+    except Exception:
+        pass
+
+
+def _post_many(sql, rows):
+    try:
+        act, t = _tbl_of(sql)
+        if not t or t == "audit_log" or not _who():
+            return
+        m = re.search(r"INTO\s+\"?\w+\"?\s*\(([^)]*)\)", sql, re.I)
+        cols = [c.strip().strip('"') for c in m.group(1).split(",")] if m else []
+        r0 = rows[0] if rows else ()
+        dts = sorted(x for r in rows for x in r if isinstance(x, str) and _DRE.match(x))
+        rng = f" | dates {dts[0]} to {dts[-1]}" if dts else ""
+        _audit_raw(_who(), (act or "Save").title() + " (bulk)", t, f"{len(rows)} row(s){rng} | first: " + (_pairs(cols, r0) if len(cols) == len(r0) else ""))
+    except Exception:
+        pass
+
+
+def _lock_many(sql, rows):
+    try:
+        act, t = _tbl_of(sql)
+        if act != "INSERT" or t not in _LOCK_T or not _who() or st.session_state.get("role") == "Admin" or st.session_state.get("_lockok"):
+            return
+        ld = _lock_date()
+        if ld and any(isinstance(x, str) and _DRE.match(x) and x <= ld for r in rows for x in r):
+            _stop_locked(ld)
+    except Exception as ex:
+        if type(ex).__name__ in ("StopException", "RerunException"):
+            raise
+
+
+
 def q(sql, p=(), fetch=True):
     key = None
     if fetch:
@@ -182,10 +348,13 @@ def q(sql, p=(), fetch=True):
             return _QC[key].copy()
     else:
         _guard(sql)
+        ctx = _pre_write(sql, p)
         _QC.clear()
     df = _run(sql, p, fetch)
     if fetch and key is not None:
         _QC[key] = df.copy()
+    if not fetch:
+        _post_write(ctx)
     return df
 
 
@@ -195,6 +364,7 @@ def q_many(sql, rows):
         return
     _guard(sql)
     rows = [_clean(r) for r in rows]
+    _lock_many(sql, rows)
     _QC.clear()
     if PG:
         from psycopg2.extras import execute_batch
@@ -214,6 +384,7 @@ def q_many(sql, rows):
             c.execute("PRAGMA foreign_keys=ON")
             c.executemany(sql, rows)
             c.commit()
+    _post_many(sql, rows)
 
 
 def pw(p):
@@ -454,9 +625,9 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-27a"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-27c"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12"}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": ""}
 
 
 def init():
@@ -480,6 +651,7 @@ def init():
         q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT DO NOTHING", (k, v), fetch=False)
     q("CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, name TEXT UNIQUE, vat TEXT)", fetch=False)
     q("CREATE TABLE IF NOT EXISTS costs(id INTEGER PRIMARY KEY, day TEXT, category TEXT, emp_id INT, company_id INT, amount REAL, note TEXT)", fetch=False)
+    q("CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, ts TEXT, usr TEXT, action TEXT, tbl TEXT, detail TEXT)", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS holidays(id INTEGER PRIMARY KEY, from_day TEXT, to_day TEXT, company_id INT, dept_id INT,
         sponsor_id INT, rate REAL DEFAULT 0, note TEXT)""", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS commissions(id INTEGER PRIMARY KEY, person TEXT, phone TEXT, company_id INT, dept_id INT,
@@ -488,7 +660,7 @@ def init():
         from_sponsor INT, to_company INT, to_dept INT, to_sponsor INT, note TEXT)""", fetch=False)
     for t_, c_ in [("employees", "id_expiry TEXT"), ("employees", "company_id INT"), ("employees", "food_allow REAL DEFAULT 0"),
                    ("employees", "ot_rate REAL DEFAULT 0"), ("employees", "bill_rate REAL DEFAULT 0"),
-                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT")]:
+                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT"), ("users", "lock_ok INT DEFAULT 0")]:
         try:
             q(f"ALTER TABLE {t_} ADD COLUMN {c_}", fetch=False)
         except Exception:
@@ -498,7 +670,7 @@ def init():
     if not PG:
         q("PRAGMA journal_mode=WAL", fetch=False)   # several people can read while one saves
     for ix in ("attendance(day)", "attendance(company_id)", "adjustments(day)", "adjustments(emp_id)", "costs(day)",
-               "leaves(emp_id)", "transfers(emp_id)", "employees(company_id)"):
+               "leaves(emp_id)", "transfers(emp_id)", "employees(company_id)", "audit_log(ts)", "audit_log(usr)"):
         q(f"CREATE INDEX IF NOT EXISTS ix_{ix.replace('(', '_').replace(')', '')} ON {ix}", fetch=False)
     for nm_, col_ in (("ux_emp_idno", "id_no"), ("ux_emp_passport", "passport_no")):   # one person = one Iqama / passport
         try:
@@ -1671,7 +1843,7 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
             for k_ in SUMC:
                 m0[k_] = sum(x[k_] for x in erows)
             m0["Company"], m0["Section"], m0["Sponsor"] = nm(cn, lastr[4]), nm(sn, lastr[5]), nm(kn, lastr[6])
-            m0["Sal. Creat"] = f"Creat {len(erows)}"     # worked at 2 / 3 places: one salary line, remark says how many
+            m0["Sal. Creat"] = f"W.Place {len(erows)}"     # worked at 2 / 3 places: one salary line, remark says how many
             erows = [m0]
         elif len(erows) > 1:           # transferred: one salary line per workplace, numbered in the Remarks column
             for i_, er_ in enumerate(erows, 1):
@@ -1738,8 +1910,10 @@ if "user" not in st.session_state:
                 r_ = q("SELECT * FROM users WHERE lower(username)=lower(?) AND pw=?", (u.strip(), pw(p_)))
                 if len(r_):
                     st.session_state.user, st.session_state.role = r_.username[0], r_.role[0]
+                    _audit_raw(r_.username[0], "Login", "", "signed in")
                     st.rerun()
                 else:
+                    _audit_raw(u.strip() or "?", "Login failed", "", "wrong username or password")
                     st.error("Wrong username or password")
         if q("SELECT COUNT(*) AS n FROM users WHERE username='admin' AND pw=?", (pw("admin123"),)).n[0]:
             st.caption("First login: admin / admin123 - change it in Users after signing in.")
@@ -1768,8 +1942,8 @@ if "user" not in st.session_state:
     st.stop()
 role = st.session_state.role
 ALL = ["Dashboard", "Employees", "Transfer", "Setup", "Attendance", "Bulk Attendance", "Leave", "Adjustments", "Costs", "Payroll",
-       "Invoices", "Commission", "Reports", "Settings"]
-MENU = {"Admin": ALL + ["Users"], "HR": ALL, "Manager": ["Dashboard", "Attendance", "Bulk Attendance", "Leave", "Reports"]}[role]
+       "Invoices", "Commission", "Reports", "Settings", "Audit Log"]
+MENU = {"Admin": ALL + ["Users"], "HR": [m_ for m_ in ALL if m_ != "Audit Log"], "Manager": ["Dashboard", "Attendance", "Bulk Attendance", "Leave", "Reports"]}[role]
 def parse_perms(v):
     """'Attendance:VE|Leave:V' -> {'Attendance': 'VE', 'Leave': 'V'}  (V = show, E = edit, D = delete; no flags = role default)."""
     out = {}
@@ -1780,7 +1954,8 @@ def parse_perms(v):
     return out
 
 
-_pm = q("SELECT perms FROM users WHERE username=?", (st.session_state.user,))
+_pm = q("SELECT perms, lock_ok FROM users WHERE username=?", (st.session_state.user,))
+st.session_state["_lockok"] = bool(len(_pm) and _pm.lock_ok[0] == 1)       # may set / remove the lock date (Settings > User access)
 _perm = parse_perms(_pm.perms[0]) if len(_pm) else {}
 _restricted = st.session_state.user != "admin" and bool(_perm)     # the main 'admin' can never be locked out
 if _restricted:          # this user has his own menu list (set by Admin in Settings > User access)
@@ -1788,11 +1963,33 @@ if _restricted:          # this user has his own menu list (set by Admin in Sett
 MENU = [m_ for m_ in MENU if m_ != "Bulk Attendance" or S("bulk_on") == "Yes"]
 st.sidebar.title(f"🏢 {S('company')}")
 st.sidebar.write(f"👤 {st.session_state.user} ({role})")
+_ld = S("lock_date")
+_can_lock = st.session_state.role == "Admin" or st.session_state.get("_lockok")
+with st.sidebar.expander(f"🔒 Lock date: {_ld}" if _ld else "🔓 Lock date: none"):
+    if _can_lock:
+        st.caption("Records on or before this date become read-only for everyone except the Admin and users with the Lock permission.")
+        try:
+            _dv = date.fromisoformat(_ld) if _ld else today()
+        except ValueError:
+            _dv = today()
+        nd_ = st.date_input("Lock up to and including", _dv, key="lock_in")
+        lc = st.columns(2)
+        if lc[0].button("🔒 Lock", key="lock_go", use_container_width=True):
+            q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ("lock_date", str(nd_)), fetch=False)
+            st.rerun()
+        if lc[1].button("🔓 Unlock", key="lock_off", use_container_width=True):
+            q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ("lock_date", ""), fetch=False)
+            st.rerun()
+    else:
+        st.write(f"Locked up to **{_ld}**. Records on or before this date cannot be added, changed or deleted." if _ld
+                 else "No lock date is set.")
+        st.caption("Only the Admin, or a user the Admin permits, can lock / unlock.")
 if st.sidebar.button("Logout"):
+    _audit_raw(st.session_state.user, "Logout", "", "signed out")
     st.session_state.clear()
     st.rerun()
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
-        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑"}
+        "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑", "Audit Log": "📜"}
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
 _pf = _perm.get(page) if _restricted else None
 if _pf is None:                         # no personal setting: the role decides (Admin / HR edit, Admin delete)
@@ -2414,6 +2611,33 @@ elif page == "Adjustments":
         st.rerun()
 
 # ---------------- Users
+elif page == "Audit Log":
+    st.header("📜 Audit log - who did what")
+    st.caption("Every sign in, save, change and delete is recorded automatically with the user name, date and time. "
+               "Nobody can edit or delete these lines.")
+    c = st.columns([1, 1, 1, 1, 2])
+    a1 = c[0].date_input("From", today() - timedelta(days=7), key="al_a")
+    a2 = c[1].date_input("To", today(), key="al_b")
+    al = q("SELECT ts, usr, action, tbl, detail FROM audit_log WHERE substr(ts,1,10) BETWEEN ? AND ? ORDER BY id DESC LIMIT 20000",
+           (str(a1), str(a2)))
+    us_f = c[2].multiselect("User", sorted(al.usr.unique().tolist()), key="al_u")
+    ac_f = c[3].multiselect("Action", sorted(al.action.unique().tolist()), key="al_ac")
+    tx = c[4].text_input("Search (employee, code, text...)", key="al_t")
+    if us_f:
+        al = al[al.usr.isin(us_f)]
+    if ac_f:
+        al = al[al.action.isin(ac_f)]
+    if tx.strip():
+        al = al[al.apply(lambda r_: tx.strip().lower() in " ".join(map(str, r_.values)).lower(), axis=1)]
+    sm = al.groupby("usr").agg(Actions=("action", "size"), Last_activity=("ts", "max")).reset_index().rename(columns={"usr": "User", "Last_activity": "Last activity"})
+    ch_ = al[~al.action.isin(["Login", "Logout", "Login failed"])].groupby("usr").size()
+    sm["Saves / changes / deletes"] = sm.User.map(ch_).fillna(0).astype(int)
+    st.subheader("Users")
+    st.dataframe(sm.sort_values("Last activity", ascending=False), hide_index=True, use_container_width=True)
+    st.subheader(f"Activity ({len(al)} lines)")
+    out = al.rename(columns={"ts": "Date & time", "usr": "User", "action": "Action", "tbl": "Menu / table", "detail": "Details"})
+    st.dataframe(out, hide_index=True, use_container_width=True, height=520)
+    st.download_button("⬇ CSV", out.to_csv(index=False).encode("utf-8-sig"), f"audit_log_{a1}_{a2}.csv", "text/csv", key="al_csv")
 elif page == "Users":
     st.header("Users & Roles")
     with st.form("usr"):
@@ -2650,6 +2874,7 @@ elif page == "Settings":
             "• **No work (O):** that day's basic is not paid, but no penalty and no food / allowance deduction.  \n"
             "• **Extra-hour pay** (set per company in Setup): a day over N hours pays 1 hour of basic = basic / (N x days of the month).  \n"
             "• **Basic increase:** the monthly basic grows by the amount below after every completed period of service from the joining date.")
+    st.caption("🔒 The Lock date is in the navigation bar (left). Give a user the right to change it in User access below.")
     with st.form("set"):
         co = st.text_input("Company name", S("company"))
         cu = st.text_input("Currency", S("currency"))
@@ -2742,7 +2967,7 @@ elif page == "Settings":
                       "DO UPDATE SET pw=excluded.pw, role=excluded.role", (nu.strip(), pw(np_), nr), fetch=False)
                     st.session_state["ua_flash"] = f"User '{nu.strip()}' saved. Now choose him below and give his menu access."
                     st.rerun()
-        us_ = q("SELECT username, role, perms FROM users ORDER BY username")
+        us_ = q("SELECT username, role, perms, lock_ok FROM users ORDER BY username")
         us_ = us_[(us_.username != "admin") & (us_.username != st.session_state.user)]
         if us_.empty:
             st.info("No other users yet - add one with 'Add a new user' above.")
@@ -2768,8 +2993,11 @@ elif page == "Settings":
                 st.session_state["ua_flash"] = f"Copied {cp_}'s access to {ua}."
                 st.session_state.pop(f"ua_g_{ua}", None)
                 st.rerun()
+            lk_ = st.checkbox("🔒 Can lock / unlock the date in the navigation bar (and work on locked dates)", value=bool(us_[us_.username == ua].lock_ok.iloc[0] == 1),
+                              key=f"ua_lk_{ua}")
             c = st.columns([1, 1, 4])
             if c[0].button("💾 Save access", key="ua_save"):
+                q("UPDATE users SET lock_ok=? WHERE username=?", (1 if lk_ else 0, ua), fetch=False)
                 q("UPDATE users SET perms=? WHERE username=?", ("|".join(ch), ua), fetch=False)
                 st.session_state["ua_flash"] = (f"Saved: {ua} can open {len(ch)} menus." if ch
                                                 else f"Saved: {ua} uses the default menus of his role.")
