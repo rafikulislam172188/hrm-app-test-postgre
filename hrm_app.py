@@ -778,15 +778,15 @@ def _pay_html(d):
         k = j
         while k + 1 < n and _PGROUP.get(cols[k + 1]) == g:
             k += 1
-        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border:2px solid {hf}">{html.escape(g or "")}</th>'
+        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border:3px solid {hf};font-size:15px">{html.escape(g or "")}</th>'
         edge[j], edge[k] = 1, 1
         j = k + 1
     top2 = "".join(f'<th style="{th}top:25px;white-space:nowrap">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
 
     def side(i):
         g_ = lambda x: None if x < 0 or x >= n else (cols[x] == "S/L", _PGROUP.get(cols[x]))
-        return (f"border-left:2px solid {hf};" if i == 0 or g_(i) != g_(i - 1) else "") + \
-               (f"border-right:2px solid {hf};" if i == n - 1 or g_(i) != g_(i + 1) else "")
+        return (f"border-left:3px solid {hf};" if i == 0 or g_(i) != g_(i - 1) else "") + \
+               (f"border-right:3px solid {hf};" if i == n - 1 or g_(i) != g_(i + 1) else "")
 
     def cell(v, i):
         if isinstance(v, float):
@@ -1174,11 +1174,11 @@ def _pay_groups(cl, tot_row, fonts, wid=None, fs=7):
         if g:
             gw = sum(wid[j:k + 1]) - 4 if wid else 1e9
             from reportlab.pdfbase.pdfmetrics import stringWidth as sw_
-            band[j] = next((t_ for t_ in (g, g.split()[0], g[:4] + ".") if sw_(t_, fonts[1], fs) <= gw), "")   # long name -> shorter one
+            band[j] = next((t_ for t_ in (g, g.split()[0], g[:4] + ".") if sw_(t_, fonts[1], fs + 2.5) <= gw), "")   # long name -> shorter one
             cmds += [("SPAN", (j, 0), (k, 0)), ("ALIGN", (j, 0), (k, 0), "CENTER")]
-        cmds.append(("BOX", (j, 0), (k, -1), 1.1, box))
+        cmds.append(("BOX", (j, 0), (k, -1), 2.0, box))
         j = k + 1
-    cmds += [("BOX", (0, 0), (0, -1), 1.1, box),
+    cmds += [("BOX", (0, 0), (0, -1), 2.0, box), ("FONTSIZE", (0, 0), (-1, 0), fs + 2.5),
              ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(S("pdf_head_bg"))), ("TEXTCOLOR", (0, 0), (-1, 1), colors.HexColor(S("pdf_head_fg"))),
              ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 0.6, box), ("LINEBELOW", (0, 1), (-1, 1), 1.0, box)]
     if tot_row is not None:                     # 'TOTAL (n)' centred over the label columns (up to the first total figure)
@@ -1252,7 +1252,7 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
     auto = min(11.0, max(4.5, rowh * 0.5))
     fs, wid = _pdf_fit(data, W, H, m, top, fsize if fsize > 0 else auto, check_h=False, fonts=fonts, fixed=fsize > 0, bold_last=istot)
     cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
-    t = Table(cl, colWidths=wid, rowHeights=[rowh] * len(cl), repeatRows=rep_)
+    t = Table(cl, colWidths=wid, rowHeights=[max(rowh, fs + 6) if (rep_ == 2 and i_ == 0) else rowh for i_ in range(len(cl))], repeatRows=rep_)
     t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra))
     lines = [(getattr(hdr, "co", "All"), "Helvetica-Bold", 17), (f"Sponsor / Kofil: {getattr(hdr, 'kofil', 'All')}", "Helvetica-Bold", 12),
              (getattr(hdr, "month", ""), "Helvetica-Bold", 11)]
@@ -1315,7 +1315,7 @@ def pay_xlsx(df, title, hdr):
     wb = Workbook()
     ws = wb.active
     ws.title = "Payroll"
-    thin, med = Side(style="thin", color="666666"), Side(style="medium", color="000000")
+    thin, med = Side(style="thin", color="666666"), Side(style="thick", color="000000")
     fill = lambda h: PatternFill("solid", fgColor=h.lstrip("#"))
     head_f, tot_f = fill(S("pdf_head_bg")), fill(S("pdf_tot_bg"))
     r0 = 1
@@ -1347,6 +1347,11 @@ def pay_xlsx(df, title, hdr):
         for ci in range(1, n + 1):
             c = ws.cell(rr, ci)
             c.font, c.fill, c.alignment = Font(bold=True, color=S("pdf_head_fg").lstrip("#")), head_f, Alignment(horizontal="center", vertical="center", wrap_text=True)
+    if pay:                                   # group names: bigger, bold
+        for ci in range(1, n + 1):
+            c = ws.cell(g_row, ci)
+            c.font = Font(bold=True, size=13, color=S("pdf_head_fg").lstrip("#"))
+        ws.row_dimensions[g_row].height = 22
     first = h_row + 1
     for ri, row in enumerate(d.itertuples(index=False), first):
         for ci, v in enumerate(row, 1):
