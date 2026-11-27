@@ -1137,7 +1137,7 @@ PAY_GROUPS = [
     ("Attendance Details", ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs"]),
     ("Salary Details", ["Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay",
                         "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net"]),
-    ("Remarks", ["Bank", "Cash", "Signature", "Finger"])]
+    ("Remarks", ["Bank", "Cash", "Signature", "Finger", "Sal. Creat"])]
 _PGROUP = {c: g for g, cs in PAY_GROUPS for c in cs}
 
 
@@ -1462,8 +1462,8 @@ def download(df, name, hdr="", uid=""):
 PCOLS = ["Code", "Name", "Join Date", "Iqama ID", "Passport No", "Company", "Section", "Sponsor", "Labour", "Pay", "Mode",
          "Monthly Basic Rate", "Hr Rate", "OT Rate", "Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs",
          "Hol Hrs", "Total Hrs", "Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days",
-         "Ex.hrs Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice"]
-PVIEW = [c for c in PCOLS if c != "Invoice"]
+         "Ex.hrs Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice", "Sal. Creat"]
+PVIEW = [c for c in PCOLS if c not in ("Invoice", "Sal. Creat")]
 SUMC = ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs", "Basic", "Food",
         "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay", "Allowances", "Bonus",
         "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice"]
@@ -1478,7 +1478,10 @@ def view_pay(p):
     d = p[PVIEW].copy()
     for c in ("Monthly Basic Rate", "Hr Rate"):
         d[c] = d[c].where(d[c] != 0, "")
-    return sign(d)
+    d = sign(d)
+    if "Sal. Creat" in p.columns and (p["Sal. Creat"].astype(str) != "").any():   # transferred worker: 2nd / 3rd salary line
+        d["Sal. Creat"] = p["Sal. Creat"].values
+    return d
 
 
 def _isna(v):
@@ -1661,14 +1664,18 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
                           "Other Allow": oth, "OT Pay": ot_pay, "Wknd OT": wk_pay, "Hol Pay": hol_pay, "Ex Days": ex_days,
                           "Ex.hrs Pay": ex_pay, "Allowances": add, "Bonus": bonus, "Advance": adv, "Absent Ded": abs_ded,
                           "Deduction": ded, "Net": net, "Bank": net if r.pay_mode == "Bank" else 0,
-                          "Cash": net if r.pay_mode != "Bank" else 0, "Invoice": tot_h * r.bill_rate})
+                          "Cash": net if r.pay_mode != "Bank" else 0, "Invoice": tot_h * r.bill_rate, "Sal. Creat": ""})
         if merge and len(erows) > 1:   # transferred inside the period: one line, shown at the LAST workplace
             lastr = max(R, key=lambda x: x[0])
             m0 = dict(erows[0])
             for k_ in SUMC:
                 m0[k_] = sum(x[k_] for x in erows)
             m0["Company"], m0["Section"], m0["Sponsor"] = nm(cn, lastr[4]), nm(sn, lastr[5]), nm(kn, lastr[6])
+            m0["Sal. Creat"] = f"Creat {len(erows)}"     # worked at 2 / 3 places: one salary line, remark says how many
             erows = [m0]
+        elif len(erows) > 1:           # transferred: one salary line per workplace, numbered in the Remarks column
+            for i_, er_ in enumerate(erows, 1):
+                er_["Sal. Creat"] = "Sal. Creat" if i_ == 1 else f"Sal. Creat {i_}"
         rows.extend(erows)
     df = pd.DataFrame(rows, columns=PCOLS).round(2)
     for col, v in (("Section", sec), ("Company", co), ("Sponsor", spn)):
@@ -2443,9 +2450,10 @@ elif page == "Payroll":
         c[1].metric("Company labour", f"{raw[raw.Labour == 'Company'].Net.sum():,.2f} {cur_}")
         c[2].metric("Outside labour", f"{raw[raw.Labour == 'Outside'].Net.sum():,.2f} {cur_}")
         download(df, "payroll", hdr_of(a, b, f[2], f[3], f[4], f[5], cs), str(gi))
-        sel = st.selectbox("Payslip for", raw.Code + " - " + raw.Name, key=f"pslip{gi}")
+        lab_ = (raw.Code + " - " + raw.Name + "").tolist()
+        sel = st.selectbox("Payslip for", range(len(lab_)), format_func=lambda i: lab_[i], key=f"pslip{gi}")
         try:
-            row = raw[raw.Code == sel.split(" - ")[0]].iloc[0]
+            row = raw.iloc[sel]
             st.download_button("🧾 Download payslip PDF", payslip_pdf(row, a, b), f"payslip_{row.Code}_{a}_{b}.pdf",
                                "application/pdf", key=f"psl_btn{gi}")
         except ImportError:
