@@ -759,9 +759,44 @@ def add_total(df, total=True):
     return out
 
 
+def _pay_html(d):
+    """Payroll sheet on screen: Employee / Attendance / Salary / Remarks bands, boxed groups, coloured TOTAL row."""
+    cols = list(d.columns)
+    n = len(cols)
+    hb, hf, tb, tf = S("pdf_head_bg"), S("pdf_head_fg"), S("pdf_tot_bg"), S("pdf_tot_fg")
+    sl = cols[0] == "S/L"
+    th = f"background:{hb};color:{hf};border:1px solid #9aa5a0;padding:3px 6px;text-align:center;position:sticky;"
+    top1 = ""
+    j = 1 if sl else 0
+    if sl:
+        top1 += f'<th rowspan="2" style="{th}top:0;border-right:2px solid {hf}">S/L</th>'
+    while j < n:
+        g = _PGROUP.get(cols[j])
+        k = j
+        while k + 1 < n and _PGROUP.get(cols[k + 1]) == g:
+            k += 1
+        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border-left:2px solid {hf};border-right:2px solid {hf}">{html.escape(g or "")}</th>'
+        j = k + 1
+    top2 = "".join(f'<th style="{th}top:24px;white-space:nowrap">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
+    rows = []
+    for r in d.itertuples(index=False):
+        tot = any(str(v).startswith("TOTAL") for v in r)
+        st_ = f"background:{tb};color:{tf};font-weight:800;" if tot else ""
+        tds = "".join(f'<td style="{st_}border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap;'
+                      f'text-align:{"right" if isinstance(v, (int, float)) and not isinstance(v, bool) else "left"}">'
+                      f'{"" if (isinstance(v, float) and v != v) else (f"{v:,.2f}" if isinstance(v, float) else html.escape(str(v)))}</td>' for v in r)
+        rows.append(f"<tr>{tds}</tr>")
+    st.markdown(f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table style="border-collapse:collapse;'
+                f'font-size:12px;width:100%"><thead><tr>{top1}</tr><tr>{top2}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
+                unsafe_allow_html=True)
+
+
 def tbl(df, total=True):
     """Show a table with S/L and a coloured, bold TOTAL row."""
     d = add_total(df, total)
+    if _is_pay(d.columns) and len(d) <= 400:
+        _pay_html(d)
+        return
     try:
         isT = d.astype(str).apply(lambda r: r.str.startswith("TOTAL").any(), axis=1)
         sty = d.style.format(precision=2, na_rep="").apply(
@@ -1208,6 +1243,26 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
     return b.getvalue()
 
 
+def _csv_bytes(df):
+    """CSV; a payroll sheet gets the same two heading lines as print / Excel (group band, then the column names)."""
+    if not _is_pay(df.columns):
+        return df.to_csv(index=False).encode("utf-8-sig")
+    import csv
+    cols = list(df.columns)
+    band, prev = [], None
+    for c in cols:
+        g = "S/L" if c == "S/L" else _PGROUP.get(c, "")
+        band.append(g if g != prev else "")
+        prev = g
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(band)
+    w.writerow(["" if c == "S/L" else c for c in cols])
+    for row in df.itertuples(index=False):
+        w.writerow(["" if (isinstance(v, float) and v != v) else v for v in row])
+    return buf.getvalue().encode("utf-8-sig")
+
+
 def pay_xlsx(df, title, hdr):
     """Excel sheet with the same layout as the printed payroll: Employee / Attendance / Salary / Remarks bands, boxes, TOTAL row."""
     from openpyxl import Workbook
@@ -1229,13 +1284,14 @@ def pay_xlsx(df, title, hdr):
         c = ws.cell(r0, 1, txt)
         c.font, c.alignment = Font(bold=True, size=sz), Alignment(horizontal="center")
         r0 += 1
-    g_row, h_row = r0 + 1, r0 + 2
+    pay = _is_pay(cols)                       # payroll: group bands above the headings; other tables: plain headings
+    g_row, h_row = (r0 + 1, r0 + 2) if pay else (r0 + 1, r0 + 1)
     sl = cols[0] == "S/L"
     j = 2 if sl else 1
-    if sl:
+    if sl and pay:
         ws.merge_cells(start_row=g_row, start_column=1, end_row=h_row, end_column=1)
         ws.cell(g_row, 1, "S/L")
-    while j <= n:
+    while pay and j <= n:
         g = _PGROUP.get(cols[j - 1])
         k = j
         while k < n and _PGROUP.get(cols[k]) == g:
@@ -1245,7 +1301,7 @@ def pay_xlsx(df, title, hdr):
             ws.cell(g_row, j, g)
         j = k + 1
     for ci, name in enumerate(cols, 1):
-        if not (sl and ci == 1):
+        if not (sl and ci == 1 and pay):
             ws.cell(h_row, ci, name)
     for rr in (g_row, h_row):
         for ci in range(1, n + 1):
@@ -1280,13 +1336,15 @@ def pay_xlsx(df, title, hdr):
     # medium box round every group
     j = 2 if sl else 1
     spans = [(1, 1)] if sl else []
-    while j <= n:
+    while pay and j <= n:
         g = _PGROUP.get(cols[j - 1])
         k = j
         while k < n and _PGROUP.get(cols[k]) == g:
             k += 1
         spans.append((j, k))
         j = k + 1
+    if not pay:
+        spans = [(1, n)]
     for a_, b_ in spans:
         for ri in range(g_row, last + 1):
             for ci in (a_, b_):
@@ -1323,11 +1381,13 @@ def download(df, name, hdr="", uid=""):
         hdr = Hdr(str(hdr))
     hdr.appr = approvers(hdr, df)
     c = st.columns([1, 1.3, 1.3, 1.4, 5])
-    if _is_pay(df.columns):
-        c[3].download_button("⬇ Excel (sheet)", pay_xlsx(df, name.replace("_", " "), hdr), f"{name}_{today()}.xlsx",
-                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="xl_" + name + uid)
-    c[0].download_button("⬇ CSV", df.to_csv(index=False).encode("utf-8-sig"), f"{name}_{today()}.csv", "text/csv",
-                         key="csv_" + name + uid)
+    try:
+        c[3].download_button("⬇ Excel (sheet)" if _is_pay(df.columns) else "⬇ Excel", pay_xlsx(df, name.replace("_", " "), hdr),
+                             f"{name}_{today()}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             key="xl_" + name + uid)
+    except Exception:
+        c[3].caption("Excel: pip install openpyxl")
+    c[0].download_button("⬇ CSV", _csv_bytes(df), f"{name}_{today()}.csv", "text/csv", key="csv_" + name + uid)
     try:
         c[1].download_button("⬇ PDF (print)", df_pdf(df, name.replace("_", " "), hdr), f"{name}_{today()}.pdf",
                              "application/pdf", key="pdf_" + name + uid)
