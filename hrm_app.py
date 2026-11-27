@@ -654,7 +654,7 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-27d"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-28b"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
                 "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": "", "inc_from": "2026-11-27"}
 
@@ -680,6 +680,7 @@ def init():
         q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT DO NOTHING", (k, v), fetch=False)
     q("CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, name TEXT UNIQUE, vat TEXT)", fetch=False)
     q("CREATE TABLE IF NOT EXISTS costs(id INTEGER PRIMARY KEY, day TEXT, category TEXT, emp_id INT, company_id INT, amount REAL, note TEXT)", fetch=False)
+    q("CREATE TABLE IF NOT EXISTS bank_pay(id INTEGER PRIMARY KEY, emp_id INT, period_from TEXT, amount REAL, UNIQUE(emp_id, period_from))", fetch=False)
     q("CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, ts TEXT, usr TEXT, action TEXT, tbl TEXT, detail TEXT)", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS holidays(id INTEGER PRIMARY KEY, from_day TEXT, to_day TEXT, company_id INT, dept_id INT,
         sponsor_id INT, rate REAL DEFAULT 0, note TEXT)""", fetch=False)
@@ -689,7 +690,7 @@ def init():
         from_sponsor INT, to_company INT, to_dept INT, to_sponsor INT, note TEXT)""", fetch=False)
     for t_, c_ in [("employees", "id_expiry TEXT"), ("employees", "company_id INT"), ("employees", "food_allow REAL DEFAULT 0"),
                    ("employees", "ot_rate REAL DEFAULT 0"), ("employees", "bill_rate REAL DEFAULT 0"),
-                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT"), ("users", "lock_ok INT DEFAULT 0"), ("companies", "cycle_month TEXT DEFAULT 'Start'")]:
+                   ("employees", "pay_mode TEXT DEFAULT 'Bank'"), ("attendance", "company_id INT"), ("attendance", "dept_id INT"), ("attendance", "ot_hours REAL"), ("employees", "passport_no TEXT"), ("attendance", "sponsor_id INT"), ("companies", "cycle_day INT DEFAULT 1"), ("employees", "special_allow REAL DEFAULT 0"), ("employees", "other_allow REAL DEFAULT 0"), ("companies", "exh_mode TEXT DEFAULT 'Off'"), ("companies", "exh_hours REAL DEFAULT 10"), ("sponsors", "approved_by TEXT"), ("users", "perms TEXT"), ("users", "lock_ok INT DEFAULT 0"), ("companies", "cycle_month TEXT DEFAULT 'Start'"), ("employees", "bank_amount REAL DEFAULT 0")]:
         try:
             q(f"ALTER TABLE {t_} ADD COLUMN {c_}", fetch=False)
         except Exception:
@@ -747,7 +748,7 @@ def hrs(i, o):
 
 def emp_df(active=True):
     return q("""SELECT e.id, e.code, e.name, c.name AS company, d.name AS section, s.name AS sponsor, e.labour_type,
-        e.pay_type, e.pay_mode, e.rate, e.food_allow, e.special_allow, e.other_allow, e.ot_rate, e.bill_rate, e.nationality, e.id_no, e.passport_no, e.phone, e.join_date, e.id_expiry, e.company_id, e.dept_id, e.sponsor_id, e.active
+        e.pay_type, e.pay_mode, e.bank_amount, e.rate, e.food_allow, e.special_allow, e.other_allow, e.ot_rate, e.bill_rate, e.nationality, e.id_no, e.passport_no, e.phone, e.join_date, e.id_expiry, e.company_id, e.dept_id, e.sponsor_id, e.active
         FROM employees e LEFT JOIN companies c ON c.id=e.company_id LEFT JOIN departments d ON d.id=e.dept_id
         LEFT JOIN sponsors s ON s.id=e.sponsor_id WHERE (? IS NULL OR e.active=?)""", (None if active is None else int(bool(active)),) * 2)
 
@@ -872,7 +873,9 @@ def pay_filters(key):
     """Company, Sponsor/Kofil, ... then 'For the month of' (or custom dates). The pay period of every selected
     company is filled in from its cycle start day; results are shown group by group."""
     cos, secs, spns = (q(f"SELECT name FROM {t}").name.tolist() for t in ("companies", "departments", "sponsors"))
-    c = st.columns(5)
+    c = st.columns(6 if key in ("pay", "rep") else 5)
+    if key in ("pay", "rep"):       # salary payment: show only the Bank salary lines, only the Cash salary lines, or all
+        st.session_state["_pm_" + key] = c[5].selectbox("Payment", ["All", "Bank salary", "Cash salary"], key=key + "_pm")
     with c[0]:
         co = eff(msel("Company", cos, key + "_co"), cos)
     with c[1]:
@@ -900,6 +903,52 @@ def pay_filters(key):
     st.session_state["_grp_" + key], st.session_state["_cyc_" + key] = groups, not custom
     st.session_state["_monlab"] = "" if custom else f"For the month of {mo}-{yr}"
     return min(g[0] for g in groups), max(g[1] for g in groups), sec, lt, pt, spn, co, qs
+
+
+def _pm_txt(key):
+    m = st.session_state.get("_pm_" + key, "All")
+    return "" if m == "All" else f"  |  {m}"
+
+
+def _bank_editor(p, a, gi):
+    """Workers paid by 'Both': enter how much goes to the Bank THIS month (the rest is Cash). Saved per pay period."""
+    b = p[p["Mode"] == "Both"] if len(p) else p
+    if b.empty:
+        return
+    with st.expander(f"🏦 Type the Bank amount of this month here - {len(b)} worker(s) paid Bank + Cash  (period starting {a})", expanded=True):
+        st.caption("Type how much of each worker's Net goes to the Bank this month. The rest is paid in Cash. "
+                   "Empty = the monthly default saved in the Employee record is used.")
+        ids = q("SELECT id, code FROM employees")
+        idm = dict(zip(ids.code, ids.id))
+        ed = pd.DataFrame({"Code": b.Code.values, "Name": b.Name.values, "Net": b.Net.values, "Bank amount": b.Bank.values})
+        out = st.data_editor(ed, hide_index=True, use_container_width=True, disabled=["Code", "Name", "Net"], key=f"bk_{gi}_{a}",
+                             column_config={"Bank amount": st.column_config.NumberColumn(min_value=0.0, format="%.2f")})
+        if st.button("💾 Save bank amounts", key=f"bks_{gi}_{a}"):
+            for c_, v_ in zip(out.Code, out["Bank amount"]):
+                if c_ in idm and v_ == v_ and v_ is not None:
+                    q("INSERT INTO bank_pay(emp_id, period_from, amount) VALUES(?,?,?) ON CONFLICT(emp_id, period_from) DO UPDATE SET amount=excluded.amount",
+                      (int(idm[c_]), str(a), float(v_)), fetch=False)
+            st.success("Saved")
+            st.rerun()
+
+
+def pm_filter(p, key):
+    """Payroll lines of the chosen Payment type. Bank salary = Bank workers + the Bank part of 'Both' workers;
+    Cash salary = Cash workers + the Cash part of 'Both' workers. The other column of a 'Both' worker is shown as 0."""
+    m = st.session_state.get("_pm_" + key, "All")
+    if m == "All" or p.empty or "Mode" not in p.columns:
+        return p
+    p = p.copy()
+    both = p["Mode"] == "Both"
+    if m == "Bank salary":
+        keep = (p["Mode"] == "Bank") | (both & (p["Bank"] > 0))
+        p = p[keep]
+        p.loc[p["Mode"] == "Both", "Cash"] = 0.0
+    else:
+        keep = ~p["Mode"].isin(["Bank", "Both"]) | (both & (p["Cash"] > 0))
+        p = p[keep]
+        p.loc[p["Mode"] == "Both", "Bank"] = 0.0
+    return p
 
 
 def filters(key):
@@ -1742,6 +1791,8 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
     e = apply_f(emp_df(None), (), lt, pt, (), (), qs)   # deactivated staff stay in old periods
     att = q("SELECT emp_id, day, status, hours, ot_hours, company_id, dept_id, sponsor_id FROM attendance WHERE day BETWEEN ? AND ?", (d1, d2))
     adj = q("SELECT emp_id, kind, amount FROM adjustments WHERE day BETWEEN ? AND ?", (d1, d2))
+    bkp = q("SELECT emp_id, SUM(amount) AS a FROM bank_pay WHERE period_from BETWEEN ? AND ? GROUP BY emp_id", (d1, d2))   # this month's Bank part ('Both' workers)
+    bank_m = {int(i): float(a_) for i, a_ in zip(bkp.emp_id, bkp.a)}
     hol = [(h.from_day, h.to_day, _id(h.company_id), _id(h.dept_id), _id(h.sponsor_id), h.rate)
            for h in q("SELECT * FROM holidays").itertuples()]
     cn, sn, kn = (dict(q(f"SELECT id,name FROM {t}").values) for t in ("companies", "departments", "sponsors"))
@@ -1889,6 +1940,8 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
             ded += basic * gp / 100 if str(r.nationality).strip().lower() == gn else 0
             net = basic + food + spa + oth + bonus + ot_pay + wk_pay + hol_pay + ex_pay + add - adv - abs_ded - ded
             tot_h = reg_h + ot_h + wk_h + hol_h
+            ba_ = bank_m.get(int(r.id), 0.0 if _isna(r.bank_amount) else float(r.bank_amount))
+            bank_ = net if r.pay_mode == "Bank" else (min(max(ba_, 0.0), max(net, 0.0)) if r.pay_mode == "Both" else 0.0)   # Both: fixed Bank amount, the rest Cash
             erows.append({"Code": r.code, "Name": r.name, "Join Date": r.join_date, "Iqama ID": r.id_no or "",
                           "Passport No": r.passport_no or "", "Company": nm(cn, cid), "Section": nm(sn, sid),
                           "Sponsor": nm(kn, kid), "Labour": r.labour_type, "Pay": r.pay_type, "Mode": r.pay_mode,
@@ -1898,14 +1951,17 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
                           "Hol Hrs": hol_h, "Total Hrs": tot_h, "Basic": basic, "Food": food, "Special Allow": spa,
                           "Other Allow": oth, "OT Pay": ot_pay, "Wknd OT": wk_pay, "Hol Pay": hol_pay, "Ex Days": ex_days,
                           "Ex.hrs Pay": ex_pay, "Allowances": add, "Bonus": bonus, "Advance": adv, "Absent Ded": abs_ded,
-                          "Deduction": ded, "Net": net, "Bank": net if r.pay_mode == "Bank" else 0,
-                          "Cash": net if r.pay_mode != "Bank" else 0, "Invoice": tot_h * r.bill_rate, "W.Place": ""})
+                          "Deduction": ded, "Net": net, "Bank": bank_, "Cash": net - bank_, "Invoice": tot_h * r.bill_rate, "W.Place": ""})
         if merge and len(erows) > 1:   # transferred inside the period: one line, shown at the LAST workplace
             lastr = max(R, key=lambda x: x[0])
             m0 = dict(erows[0])
             for k_ in SUMC:
                 m0[k_] = sum(x[k_] for x in erows)
             m0["Company"], m0["Section"], m0["Sponsor"] = nm(cn, lastr[4]), nm(sn, lastr[5]), nm(kn, lastr[6])
+            if r.pay_mode == "Both":                      # one fixed Bank amount for the whole month, the rest Cash
+                ba_ = bank_m.get(int(r.id), 0.0 if _isna(r.bank_amount) else float(r.bank_amount))
+                m0["Bank"] = min(max(ba_, 0.0), max(m0["Net"], 0.0))
+                m0["Cash"] = m0["Net"] - m0["Bank"]
             m0["W.Place"] = f"W.Place {len(erows)}"     # worked at 2 / 3 places: one salary line, remark says how many
             erows = [m0]
         elif len(erows) > 1:           # transferred: one salary line per workplace, numbered in the Remarks column
@@ -2075,9 +2131,9 @@ else:                                   # personal setting for this menu
 def _import_employees():
     """Bulk import of employees (Excel / CSV) - shown inside the Employees menu."""
     T = ["Code", "Name", "Nationality", "ID No", "Passport No", "Phone", "Company", "Section", "Sponsor", "Labour Type", "Pay Type",
-         "Pay Mode", "Rate", "Food Allow", "Special Allow", "Other Allow", "OT Rate", "Bill Rate", "Join Date", "ID Expiry"]
+         "Pay Mode", "Bank Amount", "Rate", "Food Allow", "Special Allow", "Other Allow", "OT Rate", "Bill Rate", "Join Date", "ID Expiry"]
     st.download_button("⬇ Download template", pd.DataFrame(columns=T).to_csv(index=False), "employee_template.csv")
-    st.caption("Labour Type: Company / Outside. Pay Type: Monthly / Hourly. Pay Mode: Bank / Cash. "
+    st.caption("Labour Type: Company / Outside. Pay Type: Monthly / Hourly. Pay Mode: Bank / Cash / Both (Both: Bank Amount = the part paid by bank, the rest is Cash). "
                "Companies, sections and sponsors are created automatically. Same Code = update.")
     up = st.file_uploader("Upload .xlsx or .csv", type=["xlsx", "csv"])
     if up is not None:
@@ -2117,7 +2173,7 @@ def _import_employees():
                               id_no=txt(r.get("ID No")), passport_no=txt(r.get("Passport No")), phone=txt(r.get("Phone")), company_id=idof("companies", r.get("Company")),
                               dept_id=idof("departments", r.get("Section")), sponsor_id=idof("sponsors", r.get("Sponsor")),
                               labour_type=txt(r.get("Labour Type")) or "Company", pay_type=txt(r.get("Pay Type")) or "Monthly",
-                              pay_mode=txt(r.get("Pay Mode")) or "Bank", rate=num(r.get("Rate")),
+                              pay_mode=txt(r.get("Pay Mode")) or "Bank", bank_amount=num(r.get("Bank Amount")), rate=num(r.get("Rate")),
                               food_allow=num(r.get("Food Allow")), special_allow=num(r.get("Special Allow")), other_allow=num(r.get("Other Allow")), ot_rate=num(r.get("OT Rate")),
                               bill_rate=num(r.get("Bill Rate")), join_date=dt(r.get("Join Date")) or str(today()),
                               id_expiry=dt(r.get("ID Expiry"))))
@@ -2236,9 +2292,11 @@ elif page == "Employees":
         c = st.columns(4)
         lt = c[0].selectbox("Labour type", ["Company", "Outside"], key=f"e9{v}")
         pt = c[1].selectbox("Pay type", ["Monthly", "Hourly"], key=f"e10{v}")
-        pm = c[2].selectbox("Pay mode", ["Bank", "Cash"], key=f"e11{v}")
+        pm = c[2].selectbox("Pay mode", ["Bank", "Cash", "Both"], key=f"e11{v}")
         rate = c[3].number_input("Normal hour rate (per hour)" if pt == "Hourly" else "Monthly basic salary", 0.0,
                                  key=f"e12{v}{pt}")
+        bam = st.number_input("Bank amount per month (only when Pay mode = Both: this much goes to the Bank, the rest is paid in Cash)", 0.0,
+                              key=f"e21{v}", disabled=pm != "Both")
         hr_, sfx = pt == "Hourly", (" (monthly staff only)" if pt == "Hourly" else "")
         c = st.columns(4)
         food = c[0].number_input("Food allowance / month" + sfx, 0.0, key=f"e13{v}", disabled=hr_)
@@ -2255,7 +2313,7 @@ elif page == "Employees":
                 st.error("🚫 DUPLICATE - not saved: " + m_ + ". To change that person use Edit below.")
             if not bad_:
                 save_emp(dict(code=code, name=name, nationality=nat, id_no=idn, passport_no=pas, company_id=pick(cm, co),
-                              dept_id=pick(ds, sec), sponsor_id=pick(sp, spn), labour_type=lt, pay_type=pt, pay_mode=pm,
+                              dept_id=pick(ds, sec), sponsor_id=pick(sp, spn), labour_type=lt, pay_type=pt, pay_mode=pm, bank_amount=bam if pm == "Both" else 0.0,
                               rate=rate, food_allow=0.0 if hr_ else food, special_allow=0.0 if hr_ else spa,
                               other_allow=0.0 if hr_ else oth, ot_rate=otr, bill_rate=bill, phone=ph,
                               join_date=str(jd), id_expiry=str(exp)))
@@ -2270,7 +2328,7 @@ elif page == "Employees":
     df["monthly_basic_rate"], df["hr_rate"] = df.rate.where(df.pay_type == "Monthly", 0), df.rate.where(df.pay_type == "Hourly", 0)
     df["current_basic"] = [eff_rate(r_, j_, today()) if p_ == "Monthly" else 0 for r_, j_, p_ in zip(df.rate, df.join_date, df.pay_type)]
     df = df.rename(columns={"id_no": "iqama_id"})[["code", "name", "status", "join_date", "iqama_id", "passport_no", "company", "section",
-                                                   "sponsor", "labour_type", "pay_type", "pay_mode", "monthly_basic_rate", "current_basic",
+                                                   "sponsor", "labour_type", "pay_type", "pay_mode", "bank_amount", "monthly_basic_rate", "current_basic",
                                                    "hr_rate", "ot_rate", "food_allow", "special_allow", "other_allow",
                                                    "bill_rate", "nationality", "phone", "id_expiry"]]
     tbl(df)
@@ -2738,12 +2796,14 @@ elif page == "Payroll":
     f = pay_filters("pay")
     shown = False
     for gi, (a, b, cs) in enumerate(st.session_state["_grp_pay"]):
-        raw = calc_payroll(a, b, f[2], f[3], f[4], f[5], cs, f[7], st.session_state["_cyc_pay"])
+        raw_all = calc_payroll(a, b, f[2], f[3], f[4], f[5], cs, f[7], st.session_state["_cyc_pay"])
+        raw = pm_filter(raw_all, "pay").reset_index(drop=True)
+        _bank_editor(raw_all, a, gi)
         if raw.empty:
             continue
         shown = True
         df = view_pay(raw)
-        st.subheader(f"Period {a} to {b}  -  {', '.join(cs) if cs else 'All companies'}")
+        st.subheader(f"Period {a} to {b}  -  {', '.join(cs) if cs else 'All companies'}" + _pm_txt("pay"))
         _act("Payroll sheet created", f"{a} to {b} | {', '.join(cs) if cs else 'All companies'} | {len(raw)} lines | Net total {raw.Net.sum():,.2f} | filters: {hdr_of(a, b, f[2], f[3], f[4], f[5], cs)}",
              "payroll", once=("pay", a, b, tuple(cs), str(f[2:6]), f[7]))
         tbl(df)
@@ -2916,7 +2976,7 @@ elif page == "Reports":
                             "Years": y, "Monthly wage": w, "EOSB due": a_})
             df = sign(pd.DataFrame(out))
         else:
-            p = calc_payroll(*f, cyc=cyc_)
+            p = pm_filter(calc_payroll(*f, cyc=cyc_), "rep").reset_index(drop=True)
             if kind == "Attendance summary":
                 df = sign(p[["Code", "Name", "Iqama ID", "Passport No", "Company", "Section", "Sponsor", "Labour", "Pay", "Days",
                              "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs"]])
@@ -2940,7 +3000,7 @@ elif page == "Reports":
         shown = True
         _act("Report created", f"{kind} | {a} to {b} | {', '.join(cs) if cs else 'All companies'} | {len(df)} rows | {hdr_of(*fi[:7])}",
              "reports", once=("rep", kind, str(fi)))
-        st.subheader(f"{kind}  |  Period {a} to {b}  -  {', '.join(cs) if cs else 'All companies'}")
+        st.subheader(f"{kind}  |  Period {a} to {b}  -  {', '.join(cs) if cs else 'All companies'}" + _pm_txt("rep"))
         tbl(df)
         download(df, kind.replace(" ", "_").replace("(", "").replace(")", "").replace("/", ""), hdr_of(*fi[:7]), str(gi))
     if not shown:
@@ -3313,14 +3373,14 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
 
     if page == "Employees":
         manage("employees", """SELECT e.id, e.code, e.name, c.name AS company, d.name AS section, s.name AS sponsor,
-            e.labour_type, e.pay_type, e.pay_mode, e.rate, e.food_allow, e.special_allow, e.other_allow, e.ot_rate, e.bill_rate, e.nationality,
+            e.labour_type, e.pay_type, e.pay_mode, e.bank_amount, e.rate, e.food_allow, e.special_allow, e.other_allow, e.ot_rate, e.bill_rate, e.nationality,
             e.id_no, e.passport_no, e.phone, e.join_date, e.id_expiry, e.active FROM employees e""" + EJ + "ORDER BY e.code",
-               edit=["code", "name", "labour_type", "pay_type", "pay_mode", "rate", "food_allow", "special_allow", "other_allow", "ot_rate", "bill_rate",
+               edit=["code", "name", "labour_type", "pay_type", "pay_mode", "bank_amount", "rate", "food_allow", "special_allow", "other_allow", "ot_rate", "bill_rate",
                      "nationality", "id_no", "passport_no", "phone", "join_date", "id_expiry", "active"],
                fks={"company": ("company_id", "companies"), "section": ("dept_id", "departments"),
                     "sponsor": ("sponsor_id", "sponsors")},
                selects={"labour_type": ["Company", "Outside"], "pay_type": ["Monthly", "Hourly"],
-                        "pay_mode": ["Bank", "Cash"], "active": [1, 0]},
+                        "pay_mode": ["Bank", "Cash", "Both"], "active": [1, 0]},
                cascade=[("attendance", "emp_id"), ("leaves", "emp_id"), ("adjustments", "emp_id"), ("costs", "emp_id"), ("transfers", "emp_id")],
                key="emp", flt="xemp",
                check_upd=lambda r, o: next(iter(emp_conflicts(
