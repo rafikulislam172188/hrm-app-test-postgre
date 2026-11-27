@@ -781,12 +781,14 @@ def _pay_html(d):
     rows = []
     for r in d.itertuples(index=False):
         tot = any(str(v).startswith("TOTAL") for v in r)
-        st_ = f"background:{tb};color:{tf};font-weight:800;" if tot else ""
-        tds = "".join(f'<td style="{st_}border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap;'
-                      f'text-align:{"right" if isinstance(v, (int, float)) and not isinstance(v, bool) else "left"}">'
-                      f'{"" if (isinstance(v, float) and v != v) else (f"{v:,.2f}" if isinstance(v, float) else html.escape(str(v)))}</td>' for v in r)
-        rows.append(f"<tr>{tds}</tr>")
-    st.markdown(f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table style="border-collapse:collapse;'
+        tds = "".join((f'<td class="r">{v:,.2f}</td>' if isinstance(v, float) and v == v else
+                       '<td class="r"></td>' if isinstance(v, float) else
+                       f'<td class="r">{v}</td>' if isinstance(v, int) and not isinstance(v, bool) else f"<td>{html.escape(str(v))}</td>")
+                      for v in r)
+        rows.append(f'<tr class="t">{tds}</tr>' if tot else f"<tr>{tds}</tr>")
+    css = (f'<style>.pt td{{border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap}}.pt td.r{{text-align:right}}'
+           f'.pt tr.t td{{background:{tb};color:{tf};font-weight:800}}</style>')
+    st.markdown(css + f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table class="pt" style="border-collapse:collapse;'
                 f'font-size:12px;width:100%"><thead><tr>{top1}</tr><tr>{top2}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
                 unsafe_allow_html=True)
 
@@ -794,7 +796,7 @@ def _pay_html(d):
 def tbl(df, total=True):
     """Show a table with S/L and a coloured, bold TOTAL row."""
     d = add_total(df, total)
-    if _is_pay(d.columns) and len(d) <= 400:
+    if _is_pay(d.columns) and len(d) <= 1500:
         _pay_html(d)
         return
     try:
@@ -1110,8 +1112,13 @@ PAY_GROUPS = [
 _PGROUP = {c: g for g, cs in PAY_GROUPS for c in cs}
 
 
+_PSPEC = set(PAY_GROUPS[1][1]) | set(PAY_GROUPS[2][1]) | {"Bank", "Cash"}
+
+
 def _is_pay(names):
-    return {"Basic", "Net", "Days", "Code"} <= set(names)
+    """A payroll sheet - also when only SOME of its columns are printed / shown (custom print)."""
+    nm = set(map(str, names))
+    return bool(nm & {"Basic", "Net"}) and len(nm & _PSPEC) >= 3
 
 
 def _pay_groups(cl, tot_row, fonts):
