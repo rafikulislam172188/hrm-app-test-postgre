@@ -454,7 +454,7 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-26f"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-27a"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
                 "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12"}
 
@@ -500,6 +500,11 @@ def init():
     for ix in ("attendance(day)", "attendance(company_id)", "adjustments(day)", "adjustments(emp_id)", "costs(day)",
                "leaves(emp_id)", "transfers(emp_id)", "employees(company_id)"):
         q(f"CREATE INDEX IF NOT EXISTS ix_{ix.replace('(', '_').replace(')', '')} ON {ix}", fetch=False)
+    for nm_, col_ in (("ux_emp_idno", "id_no"), ("ux_emp_passport", "passport_no")):   # one person = one Iqama / passport
+        try:
+            q(f"CREATE UNIQUE INDEX IF NOT EXISTS {nm_} ON employees({col_}) WHERE {col_} IS NOT NULL AND {col_} <> ''", fetch=False)
+        except Exception:
+            pass          # old duplicates still exist: the Employees / Payroll pages list them until they are fixed
 
 
 @st.cache_resource(show_spinner=False)
@@ -550,6 +555,48 @@ def save_emp(d):
     cols = list(d)
     q(f"INSERT INTO employees({','.join(cols)}) VALUES({','.join('?' * len(cols))}) ON CONFLICT(code) DO UPDATE SET "
       + ",".join(f"{k}=excluded.{k}" for k in cols if k != "code"), tuple(d.values()), fetch=False)
+
+
+def _nk(v):
+    """Compare key: no spaces, upper case (so 'ab 12' = 'AB12')."""
+    return re.sub(r"\s+", "", str(v if v is not None and str(v) != "nan" else "")).upper()
+
+
+def emp_conflicts(code, idn, pas, skip_id=None):
+    """Messages for every employee that already uses this Code / Iqama ID / Passport no. (empty list = all free)."""
+    df = q("SELECT id, code, name, id_no, passport_no FROM employees")
+    out = []
+    for fld, val, label in (("code", code, "Code"), ("id_no", idn, "ID / Iqama no."), ("passport_no", pas, "Passport no.")):
+        k = _nk(val)
+        if not k:
+            continue
+        for r in df.itertuples():
+            if r.id != skip_id and _nk(getattr(r, fld)) == k:
+                out.append(f"{label} '{str(val).strip()}' is already used by {r.name} (code {r.code})")
+    return out
+
+
+def dup_report():
+    """Employees that share the same Iqama ID or Passport no. (data entered before the rule existed)."""
+    df = q("SELECT code, name, id_no, passport_no, active FROM employees")
+    rows = []
+    for fld, label in (("id_no", "ID / Iqama no."), ("passport_no", "Passport no.")):
+        d = df[df[fld].map(_nk) != ""].assign(_k=lambda x: x[fld].map(_nk))
+        for k, g in d.groupby("_k"):
+            if len(g) > 1:
+                rows.append({"Field": label, "Value": g[fld].iloc[0], "Persons": len(g),
+                             "Employees": " | ".join(f"{r.code} {r.name}" for r in g.itertuples())})
+    return pd.DataFrame(rows)
+
+
+def show_dups():
+    """Red warning on the pages that matter (Employees, Payroll, Dashboard) while duplicates exist."""
+    d = dup_report()
+    if d.empty:
+        return
+    st.error(f"⚠ DUPLICATE: {len(d)} Iqama / Passport number(s) are used by more than one person. "
+             "Correct them in Employees > Edit (a number must belong to ONE person only).")
+    tbl(d, False)
 
 
 def _norm_cb(key):
@@ -1496,10 +1543,24 @@ def _import_employees():
                 q(f"INSERT INTO {tbl}(name) VALUES(?) ON CONFLICT DO NOTHING", (v,), fetch=False)
                 return int(q(f"SELECT id FROM {tbl} WHERE name=?", (v,)).id[0])
 
-            n = 0
+            n, rej = 0, []
+            seen = {"c": {}, "i": {}, "p": {}}
             for _, r in df.iterrows():
                 if not txt(r.get("Code")):
                     continue
+                cd_, id_, ps_ = txt(r.get("Code")), txt(r.get("ID No")), txt(r.get("Passport No"))
+                why = []
+                for key_, val_, lab_ in (("c", cd_, "Code"), ("i", id_, "ID No"), ("p", ps_, "Passport No")):
+                    if _nk(val_) and _nk(val_) in seen[key_]:
+                        why.append(f"{lab_} '{val_}' is repeated inside the file (also {seen[key_][_nk(val_)]})")
+                ex_ = q("SELECT id FROM employees WHERE UPPER(REPLACE(code,' ',''))=?", (_nk(cd_),))
+                why += [m_ for m_ in emp_conflicts("", id_, ps_, skip_id=int(ex_.id[0]) if len(ex_) else None)]
+                if why:
+                    rej.append({"Code": cd_, "Name": txt(r.get("Name")), "Why rejected": "; ".join(why)})
+                    continue
+                for key_, val_ in (("c", cd_), ("i", id_), ("p", ps_)):
+                    if _nk(val_):
+                        seen[key_][_nk(val_)] = cd_
                 save_emp(dict(code=txt(r.get("Code")), name=txt(r.get("Name")), nationality=txt(r.get("Nationality")),
                               id_no=txt(r.get("ID No")), passport_no=txt(r.get("Passport No")), phone=txt(r.get("Phone")), company_id=idof("companies", r.get("Company")),
                               dept_id=idof("departments", r.get("Section")), sponsor_id=idof("sponsors", r.get("Sponsor")),
@@ -1510,6 +1571,9 @@ def _import_employees():
                               id_expiry=dt(r.get("ID Expiry"))))
                 n += 1
             st.success(f"Imported / updated {n} employees")
+            if rej:
+                st.error(f"🚫 {len(rej)} row(s) NOT imported - duplicate Code / Iqama ID / Passport no.:")
+                tbl(pd.DataFrame(rej), False)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1531,6 +1595,7 @@ if page == "Dashboard":
         '@keyframes mqmove{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}</style>'
         f'<div class="mq"><span>{html.escape(str(S("marquee_text")))}</span></div>', unsafe_allow_html=True)
     st.header("Dashboard")
+    show_dups()
     e = emp_df()
     t = str(today())
     m1 = today().replace(day=1)
@@ -1601,12 +1666,13 @@ if page == "Dashboard":
 # ---------------- Employees
 elif page == "Employees":
     st.header("Employees / Labour")
+    show_dups()
     if st.session_state.get("flash_emp"):
         st.success(st.session_state.pop("flash_emp"))
     cm, ds, sp = q("SELECT * FROM companies"), q("SELECT * FROM departments"), q("SELECT * FROM sponsors")
     pick = lambda t, n: None if n == "-" else int(t[t.name == n].id.iloc[0])
     v = st.session_state.get("empv", 0)
-    with st.expander("➕ Add / update employee (same code = update)"):
+    with st.expander("➕ Add employee  (Code, Iqama ID and Passport no. must be unique)"):
         c = st.columns(4)
         code, name = c[0].text_input("Code", key=f"e1{v}"), c[1].text_input("Name", key=f"e2{v}")
         nat, idn = c[2].text_input("Nationality", key=f"e3{v}"), c[3].text_input("ID / Iqama no.", key=f"e4{v}")
@@ -1632,13 +1698,17 @@ elif page == "Employees":
         ph, jd = c[1].text_input("Phone", key=f"e16{v}"), c[2].date_input("Join date", today(), key=f"e17{v}")
         exp = c[3].date_input("ID expiry", today() + timedelta(days=365), key=f"e18{v}")
         if st.button("💾 Save employee", key=f"esave{v}") and code and name:
-            save_emp(dict(code=code, name=name, nationality=nat, id_no=idn, passport_no=pas, company_id=pick(cm, co),
-                          dept_id=pick(ds, sec), sponsor_id=pick(sp, spn), labour_type=lt, pay_type=pt, pay_mode=pm,
-                          rate=rate, food_allow=0.0 if hr_ else food, special_allow=0.0 if hr_ else spa,
-                          other_allow=0.0 if hr_ else oth, ot_rate=otr, bill_rate=bill, phone=ph,
-                          join_date=str(jd), id_expiry=str(exp)))
-            st.session_state["empv"], st.session_state["flash_emp"] = v + 1, f"Saved {code}"
-            st.rerun()
+            bad_ = emp_conflicts(code, idn, pas)
+            for m_ in bad_:
+                st.error("🚫 DUPLICATE - not saved: " + m_ + ". To change that person use Edit below.")
+            if not bad_:
+                save_emp(dict(code=code, name=name, nationality=nat, id_no=idn, passport_no=pas, company_id=pick(cm, co),
+                              dept_id=pick(ds, sec), sponsor_id=pick(sp, spn), labour_type=lt, pay_type=pt, pay_mode=pm,
+                              rate=rate, food_allow=0.0 if hr_ else food, special_allow=0.0 if hr_ else spa,
+                              other_allow=0.0 if hr_ else oth, ot_rate=otr, bill_rate=bill, phone=ph,
+                              join_date=str(jd), id_expiry=str(exp)))
+                st.session_state["empv"], st.session_state["flash_emp"] = v + 1, f"Saved {code}"
+                st.rerun()
     with st.expander("📥 Bulk import employees (Excel / CSV)"):
         _import_employees()
     showall = st.checkbox("Show deactivated employees too", key="emp_all")
@@ -2081,6 +2151,7 @@ elif page == "Users":
 # ---------------- Payroll
 elif page == "Payroll":
     st.header("Payroll")
+    show_dups()
     f = pay_filters("pay")
     shown = False
     for gi, (a, b, cs) in enumerate(st.session_state["_grp_pay"]):
@@ -2458,7 +2529,7 @@ CAN_DELETE = ("Admin",)         # roles that can delete (change here if you want
 
 
 def manage(table, sql, params=(), edit=(), fks=None, selects=None, hide=(), used_in=(), cascade=(), key="m",
-           after_upd=None, before_del=None, guard=None, flt=None, cols=None, post=None):
+           after_upd=None, before_del=None, guard=None, flt=None, cols=None, post=None, check_upd=None):
     """Inline Edit + Delete grid for any table. `sql` must return `id` plus the columns to show."""
     can_e, can_d = _CAN_E, _CAN_D
     if not (can_e or can_d):
@@ -2532,6 +2603,12 @@ def manage(table, sql, params=(), edit=(), fks=None, selects=None, hide=(), used
         st.rerun()
 
     if can_e and st.button("💾 Save changes", key=key + "s"):
+        if check_upd:                       # validate ALL edited rows first, save nothing if one is wrong
+            errs_ = [m_ for i_, r_ in ed.iterrows() for m_ in [check_upd(r_, view.loc[i_])] if m_]
+            if errs_:
+                for m_ in errs_:
+                    st.error("🚫 " + m_)
+                return
         n = 0
         for i, r in ed.iterrows():
             o, sets = view.loc[i], {}
@@ -2644,7 +2721,10 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
                selects={"labour_type": ["Company", "Outside"], "pay_type": ["Monthly", "Hourly"],
                         "pay_mode": ["Bank", "Cash"], "active": [1, 0]},
                cascade=[("attendance", "emp_id"), ("leaves", "emp_id"), ("adjustments", "emp_id"), ("costs", "emp_id"), ("transfers", "emp_id")],
-               key="emp", flt="xemp")
+               key="emp", flt="xemp",
+               check_upd=lambda r, o: next(iter(emp_conflicts(
+                   r["code"] if r["code"] != o["code"] else "", r["id_no"] if r["id_no"] != o["id_no"] else "",
+                   r["passport_no"] if r["passport_no"] != o["passport_no"] else "", skip_id=int(r["id"]))), None))
 
     elif page == "Setup":
         t1, t2, t3 = st.tabs(["Companies", "Sections", "Sponsors / Kofil"])
