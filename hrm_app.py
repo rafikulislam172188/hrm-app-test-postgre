@@ -654,7 +654,7 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-28b"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-28c"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
                 "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": "", "inc_from": "2026-11-27", "logo_s1": "", "logo_s2": "", "logo_s3": "", "logo_c1": "#E0147A", "logo_c1t": "#FFFFFF", "logo_c2": "#0E3B29", "logo_c3": "#4A6A5B"}
 
@@ -681,6 +681,7 @@ def init():
     q("CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY, name TEXT UNIQUE, vat TEXT)", fetch=False)
     q("CREATE TABLE IF NOT EXISTS costs(id INTEGER PRIMARY KEY, day TEXT, category TEXT, emp_id INT, company_id INT, amount REAL, note TEXT)", fetch=False)
     q("CREATE TABLE IF NOT EXISTS bank_pay(id INTEGER PRIMARY KEY, emp_id INT, period_from TEXT, amount REAL, UNIQUE(emp_id, period_from))", fetch=False)
+    q("CREATE TABLE IF NOT EXISTS heavy_allow(id INTEGER PRIMARY KEY, company_id INT, dept_id INT, amount REAL DEFAULT 0, UNIQUE(company_id, dept_id))", fetch=False)
     q("CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, ts TEXT, usr TEXT, action TEXT, tbl TEXT, detail TEXT)", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS holidays(id INTEGER PRIMARY KEY, from_day TEXT, to_day TEXT, company_id INT, dept_id INT,
         sponsor_id INT, rate REAL DEFAULT 0, note TEXT)""", fetch=False)
@@ -1809,6 +1810,8 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
     e = apply_f(emp_df(None), (), lt, pt, (), (), qs)   # deactivated staff stay in old periods
     att = q("SELECT emp_id, day, status, hours, ot_hours, company_id, dept_id, sponsor_id FROM attendance WHERE day BETWEEN ? AND ?", (d1, d2))
     adj = q("SELECT emp_id, kind, amount FROM adjustments WHERE day BETWEEN ? AND ?", (d1, d2))
+    hva = q("SELECT company_id, dept_id, amount FROM heavy_allow")
+    heavy = {(None if _isna(c_) else int(c_), None if _isna(d_) else int(d_)): float(a_) for c_, d_, a_ in zip(hva.company_id, hva.dept_id, hva.amount)}
     bkp = q("SELECT emp_id, SUM(amount) AS a FROM bank_pay WHERE period_from BETWEEN ? AND ? GROUP BY emp_id", (d1, d2))   # this month's Bank part ('Both' workers)
     bank_m = {int(i): float(a_) for i, a_ in zip(bkp.emp_id, bkp.a)}
     hol = [(h.from_day, h.to_day, _id(h.company_id), _id(h.dept_id), _id(h.sponsor_id), h.rate)
@@ -1945,8 +1948,9 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
                         ot_pay += sum(x[3] for x in p_) * otr
                     wk_pay += sum(x[2] + x[3] for x in w_) * otr
                     hol_pay += sum((x[2] + x[3]) * (x[8] if x[8] > 0 else otr) for x in h_)
-                    if mth in full:
-                        bonus += rate_m / nd * len(p_) / wdm
+                    if mth in full and r.labour_type == "Company":   # Outside labour gets NO bonus at all
+                        sb_ = heavy.get((cid, sid))                  # Section bonus (e.g. 100 for heavy work) replaces the usual bonus
+                        bonus += (sb_ if sb_ else rate_m / nd) * len(p_) / wdm
             else:
                 oe = otr_show = r.ot_rate if r.ot_rate > 0 else r.rate
                 basic, ot_pay, wk_pay = reg_h * r.rate, ot_h * oe, wk_h * oe
@@ -3416,7 +3420,7 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
                    r["passport_no"] if r["passport_no"] != o["passport_no"] else "", skip_id=int(r["id"]))), None))
 
     elif page == "Setup":
-        t1, t2, t3 = st.tabs(["Companies", "Sections", "Sponsors / Kofil"])
+        t1, t2, t3, t4 = st.tabs(["Companies", "Sections", "Sponsors / Kofil", "Section bonus"])
         with t1:
             manage("companies", "SELECT id, name, vat, cycle_day, COALESCE(cycle_month,'Start') AS cycle_month, exh_mode, exh_hours FROM companies ORDER BY name",
                    edit=["name", "vat", "cycle_day", "cycle_month", "exh_mode", "exh_hours"],
@@ -3428,6 +3432,22 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
         with t3:
             manage("sponsors", "SELECT id, name, phone, approved_by FROM sponsors ORDER BY name", edit=["name", "phone", "approved_by"],
                    used_in=[("employees", "sponsor_id"), ("attendance", "sponsor_id"), ("transfers", "from_sponsor"), ("transfers", "to_sponsor")], key="msp")
+
+        with t4:
+            st.caption("Bonus per Company + Section, paid every month as a fixed amount (e.g. 100 for heavy work) - it goes in the 'Bonus' column and REPLACES the usual bonus for COMPANY labour of that company + section (Outside labour gets no bonus at all). "
+                       "Paid in full when the worker has NO absent day. With any absent day the bonus is not paid, and Basic is cut + the Absent Ded penalty is charged as before (Basic / days of the month x absent days).")
+            hc_, hs_ = q("SELECT id, name FROM companies ORDER BY name"), q("SELECT id, name FROM departments ORDER BY name")
+            x1, x2, x3 = st.columns(3)
+            hco = x1.selectbox("Company", hc_.name.tolist(), key="hv_co") if len(hc_) else None
+            hse = x2.selectbox("Section", hs_.name.tolist(), key="hv_se") if len(hs_) else None
+            ham = x3.number_input("Bonus per month", 0.0, step=10.0, key="hv_am")
+            if st.button("Save bonus", key="hv_go") and hco and hse:
+                q("INSERT INTO heavy_allow(company_id, dept_id, amount) VALUES(?,?,?) ON CONFLICT(company_id, dept_id) DO UPDATE SET amount=excluded.amount",
+                  (int(hc_[hc_.name == hco].id.iloc[0]), int(hs_[hs_.name == hse].id.iloc[0]), float(ham)), fetch=False)
+                st.rerun()
+            manage("heavy_allow", """SELECT h.id, c.name AS company, d.name AS section, h.amount FROM heavy_allow h
+                   LEFT JOIN companies c ON c.id=h.company_id LEFT JOIN departments d ON d.id=h.dept_id ORDER BY c.name, d.name""",
+                   edit=["amount"], key="mhv")
 
     elif page == "Attendance":
         cc = st.columns(7)
