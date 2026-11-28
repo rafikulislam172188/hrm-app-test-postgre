@@ -26,10 +26,16 @@ def _dmy(fn):
 
 try:
     from streamlit.delta_generator import DeltaGenerator
-    DeltaGenerator.date_input = _dmy(DeltaGenerator.date_input)
+    if not getattr(DeltaGenerator.date_input, "_dmy_", False):
+        _w = _dmy(DeltaGenerator.date_input)
+        _w._dmy_ = True
+        DeltaGenerator.date_input = _w
 except Exception:
     pass
-st.date_input = _dmy(st.date_input)
+if not getattr(st.date_input, "_dmy_", False):
+    _w2 = _dmy(st.date_input)
+    _w2._dmy_ = True
+    st.date_input = _w2
 st.set_page_config(page_title="HRM", layout="wide")
 st.markdown("""<style>
 .stApp{background:#eef5ef;color:#1b2b22}
