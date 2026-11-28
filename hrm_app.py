@@ -2550,13 +2550,14 @@ elif page == "Setup":
 
     st.divider()
     st.subheader("Extra-hour rule per section (new)")
-    st.caption("For a Company + Section: a day over N hours pays 1 hour of Basic (Basic / (N x days of the month)) in 'Ex Days' / 'Ex.hrs Pay'. "
+    st.caption("To CHANGE a rule: pick the same Company + Section here and press Save rule (it updates), or edit / delete it in the Edit / Delete part at the bottom of this page. "
+               "For a Company + Section: a day over N hours pays 1 hour of Basic (Basic / (N x days of the month)) in 'Ex Days' / 'Ex.hrs Pay'. "
                "This rule REPLACES the company's Extra-hour setting (Client companies above) for COMPANY labour of that section only. "
                "Sections without a rule here keep the company setting.")
     e1, e2, e3, e4, e5 = st.columns([2, 2, 2, 1.2, 1])
     eco = e1.selectbox("Company", hc_.name.tolist(), key="ex_co") if len(hc_) else None
     ese = e2.selectbox("Section", hs_.name.tolist(), key="ex_se") if len(hs_) else None
-    emo = e3.selectbox("Mode", ["Instead of OT", "Plus OT", "Off"], key="ex_mo")
+    emo = e3.selectbox("Mode", ["Off", "Instead of OT", "Plus OT"], key="ex_mo")
     ehr = e4.number_input("N hours", 1.0, 24.0, 10.0, key="ex_hr")
     e5.write("")
     if e5.button("Save rule", key="ex_go") and eco and ese:
@@ -3478,11 +3479,12 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
         with t4:
             manage("heavy_allow", """SELECT h.id, c.name AS company, d.name AS section, h.amount FROM heavy_allow h
                    LEFT JOIN companies c ON c.id=h.company_id LEFT JOIN departments d ON d.id=h.dept_id ORDER BY c.name, d.name""",
-                   edit=["amount"], key="mhv")
+                   edit=["amount"], fks={"company": ("company_id", "companies"), "section": ("dept_id", "departments")}, key="mhv")
         with t5:
             manage("exh_rules", """SELECT x.id, c.name AS company, d.name AS section, x.mode, x.hours FROM exh_rules x
                    LEFT JOIN companies c ON c.id=x.company_id LEFT JOIN departments d ON d.id=x.dept_id ORDER BY c.name, d.name""",
-                   edit=["mode", "hours"], selects={"mode": ["Instead of OT", "Plus OT", "Off"]}, key="mexr")
+                   edit=["mode", "hours"], fks={"company": ("company_id", "companies"), "section": ("dept_id", "departments")},
+                   selects={"mode": ["Off", "Instead of OT", "Plus OT"]}, key="mexr")
 
     elif page == "Attendance":
         cc = st.columns(7)
