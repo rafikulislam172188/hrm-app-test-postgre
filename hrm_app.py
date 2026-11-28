@@ -1025,27 +1025,27 @@ def _pay_html(d):
     top1, edge = "", {0: 1} if sl else {}
     j = 1 if sl else 0
     if sl:
-        top1 += f'<th rowspan="2" style="{th}top:0;border:2px solid {hf}">S/L</th>'
+        top1 += f'<th rowspan="2" style="{th}top:0;border:1px solid {hf}">S/L</th>'
     while j < n:
         g = _PGROUP.get(cols[j])
         k = j
         while k + 1 < n and _PGROUP.get(cols[k + 1]) == g:
             k += 1
-        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border:2px solid {hf};font-size:15px">{html.escape(g or "")}</th>'
+        top1 += f'<th colspan="{k - j + 1}" style="{th}top:0;border:1px solid {hf};font-size:15px">{html.escape(g or "")}</th>'
         edge[j], edge[k] = 1, 1
         j = k + 1
-    top2 = "".join(f'<th style="{th}top:25px;white-space:nowrap;border-top:2px solid {hf};border-bottom:2px solid {hf}">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
+    top2 = "".join(f'<th style="{th}top:25px;white-space:nowrap;border-top:1px solid {hf};border-bottom:1px solid {hf}">{html.escape(str(c))}</th>' for c in cols[1 if sl else 0:])
 
     def side(i):
         g_ = lambda x: None if x < 0 or x >= n else (cols[x] == "S/L", _PGROUP.get(cols[x]))
-        return (f"border-left:2px solid {hf};" if i == 0 or g_(i) != g_(i - 1) else "") + \
-               (f"border-right:2px solid {hf};" if i == n - 1 or g_(i) != g_(i + 1) else "")
+        return (f"border-left:1px solid {hf};" if i == 0 or g_(i) != g_(i - 1) else "") + \
+               (f"border-right:1px solid {hf};" if i == n - 1 or g_(i) != g_(i + 1) else "")
 
     red = set(_red_rows(d))                    # more than 1 absent day: Net amount in red
-    net_i = cols.index("Net") if "Net" in cols else -1
+    red_i = {cols.index(c_) for c_ in _RED_COLS if c_ in cols}
 
     def cell(v, i, rd=False):
-        sd = side(i) + ("color:#d00000;font-weight:800;" if rd and i == net_i else "")
+        sd = side(i) + ("color:#d00000;font-weight:800;" if rd and i in red_i else "")
         if isinstance(v, float):
             c = f'<td class="r" style="{sd}">' + (f"{v:,.2f}" if v == v else "") + "</td>"
         elif isinstance(v, (int,)) and not isinstance(v, bool) or hasattr(v, "item") and not isinstance(v, str):
@@ -1063,14 +1063,14 @@ def _pay_html(d):
             lab = next(str(v) for v in vals if str(v).startswith("TOTAL"))
             kk = next((i for i, v in enumerate(vals) if i > 0 and str(v) not in ("", "nan", "None") and not str(v).startswith("TOTAL")), 0)
             if kk > 1:
-                tds = f'<td colspan="{kk}" style="text-align:center;border-left:2px solid {hf};border-right:2px solid {hf}">{html.escape(lab)}</td>'
+                tds = f'<td colspan="{kk}" style="text-align:center;border-left:1px solid {hf};border-right:1px solid {hf}">{html.escape(lab)}</td>'
                 tds += "".join(cell(v, i) for i, v in enumerate(vals) if i >= kk)
                 rows.append(f'<tr class="t">{tds}</tr>')
                 continue
         tds = "".join(cell(v, i, ri_ in red) for i, v in enumerate(vals))
         rows.append(f'<tr class="t">{tds}</tr>' if tot else f"<tr>{tds}</tr>")
     css = (f'<style>.pt td{{border:1px solid #d0d7d3;padding:2px 6px;white-space:nowrap}}.pt td.r{{text-align:right}}.pt th{{font-weight:800!important}}'
-           f'.pt tr.t td{{background:{tb};color:{tf};font-weight:800;border-top:2px solid {hf};border-bottom:2px solid {hf}}}</style>')
+           f'.pt tr.t td{{background:{tb};color:{tf};font-weight:800;border-top:1px solid {hf};border-bottom:1px solid {hf}}}</style>')
     page = (css + f'<div style="overflow:auto;max-height:620px;background:#fff;border-radius:8px"><table class="pt" style="border-collapse:collapse;'
             f'font-size:12px;width:100%"><thead><tr>{top1}</tr><tr>{top2}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
     if hasattr(st, "html"):
@@ -1433,9 +1433,9 @@ def _pay_groups(cl, tot_row, fonts, wid=None, fs=7):
             from reportlab.pdfbase.pdfmetrics import stringWidth as sw_
             band[j] = next((t_ for t_ in (g, g.split()[0], g[:4] + ".") if sw_(t_, fonts[1], fs + 2.5) <= gw), "")   # long name -> shorter one
             cmds += [("SPAN", (j, 0), (k, 0)), ("ALIGN", (j, 0), (k, 0), "CENTER")]
-        cmds.append(("BOX", (j, 0), (k, -1), 1.2, box))
+        cmds.append(("BOX", (j, 0), (k, -1), 1.0, box))
         j = k + 1
-    cmds += [("BOX", (0, 0), (0, -1), 1.2, box), ("FONTSIZE", (0, 0), (-1, 0), fs + 2.5),
+    cmds += [("BOX", (0, 0), (0, -1), 1.0, box), ("FONTSIZE", (0, 0), (-1, 0), fs + 2.5),
              ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(S("pdf_head_bg"))), ("TEXTCOLOR", (0, 0), (-1, 1), colors.HexColor(S("pdf_head_fg"))),
              ("FONTNAME", (0, 0), (-1, 1), fonts[1]), ("LINEBELOW", (0, 0), (-1, 0), 0.8, box), ("LINEBELOW", (0, 1), (-1, 1), 1.0, box)]
     if tot_row is not None:                     # 'TOTAL (n)' centred over the label columns (up to the first total figure)
@@ -1452,6 +1452,9 @@ def _pdf_data(df, cap=40):
     return [[str(c) for c in df.columns]] + [[fmt(v)[:cap] for v in row] for row in df.itertuples(index=False)]
 
 
+_RED_COLS = ("Net", "Bank", "Cash")      # more than 1 absent day: these amounts are red + bold
+
+
 def _red_rows(d):
     """Positions (0-based, TOTAL row excluded) of the payroll lines with more than 1 absent day -> their Net is marked red."""
     if "Absent" not in d.columns or "Net" not in d.columns:
@@ -1460,15 +1463,17 @@ def _red_rows(d):
     return [i for i, (v, row) in enumerate(zip(ab, d.itertuples(index=False))) if v > 1 and not any(str(x).startswith("TOTAL") for x in row)]
 
 
-def _red_pdf(d, data, rep_):
+def _red_pdf(d, data, rep_, fonts=None):
     from reportlab.lib import colors
-    if "Net" not in data[0]:
-        return []
-    ni, off = data[0].index("Net"), rep_ - 1 if rep_ > 1 else 0
+    off = rep_ - 1 if rep_ > 1 else 0
     out = []
     for i in _red_rows(d):
         r = i + 1 + off
-        out += [("TEXTCOLOR", (ni, r), (ni, r), colors.HexColor("#d00000"))]
+        for nm_ in _RED_COLS:
+            if nm_ in data[0]:
+                ci = data[0].index(nm_)
+                out.append(("TEXTCOLOR", (ci, r), (ci, r), colors.HexColor("#d00000")))
+                out.append(("FONTNAME", (ci, r), (ci, r), fonts[1] if fonts else "Helvetica-Bold"))
     return out
 
 
@@ -1491,7 +1496,7 @@ def df_pdf(df, title, hdr=""):
             break
     cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
     t = Table(cl, colWidths=wid, repeatRows=rep_)
-    t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts) + extra + _red_pdf(df, data, rep_)))
+    t.setStyle(TableStyle(_pdf_style(fs, istot, 1.5, fonts) + extra + _red_pdf(df, data, rep_, fonts)))
     sty = getSampleStyleSheet()
     sm = ParagraphStyle("sm", parent=sty["Normal"], fontSize=8, leading=10)
     foot = lambda c, d: _draw_logo(c, ps[0], ps[1], m, lg)
@@ -1530,7 +1535,7 @@ def df_pdf_custom(df, cols, rowh, hdr, title, paper="A4", fit=False, family="Hel
     fs, wid = _pdf_fit(data, W, H, m, top, fsize if fsize > 0 else auto, check_h=False, fonts=fonts, fixed=fsize > 0, bold_last=istot)
     cl, extra, rep_ = _pay_groups(_pdf_clip(data, wid, fs, fonts, istot), data[-1] if istot else None, fonts, wid, fs)
     t = Table(cl, colWidths=wid, rowHeights=[max(rowh, fs + 6) if (rep_ == 2 and i_ == 0) else rowh for i_ in range(len(cl))], repeatRows=rep_)
-    t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra + _red_pdf(d, data, rep_)))
+    t.setStyle(TableStyle(_pdf_style(fs, istot, 0, fonts) + extra + _red_pdf(d, data, rep_, fonts)))
     lines = [(getattr(hdr, "co", "All"), "Helvetica-Bold", 17), (f"Sponsor / Kofil: {getattr(hdr, 'kofil', 'All')}", "Helvetica-Bold", 12),
              (getattr(hdr, "month", ""), "Helvetica-Bold", 11)]
 
@@ -1592,7 +1597,7 @@ def pay_xlsx(df, title, hdr):
     wb = Workbook()
     ws = wb.active
     ws.title = "Payroll"
-    thin, med = Side(style="thin", color="666666"), Side(style="medium", color="000000")
+    thin, med = Side(style="thin", color="666666"), Side(style="thin", color="000000")
     fill = lambda h: PatternFill("solid", fgColor=h.lstrip("#"))
     head_f, tot_f = fill(S("pdf_head_bg")), fill(S("pdf_tot_bg"))
     r0 = 1
@@ -1640,10 +1645,10 @@ def pay_xlsx(df, title, hdr):
             if isinstance(v, float):
                 c.number_format = "#,##0.00"
     last = first + len(d) - 1
-    if "Net" in cols:                          # more than 1 absent day: Net amount in red
-        for i_ in _red_rows(d):
-            c = ws.cell(first + i_, cols.index("Net") + 1)
-            c.font = Font(bold=True, color="D00000")
+    for i_ in _red_rows(d):                    # more than 1 absent day: Net, Bank, Cash in red + bold
+        for nm_ in _RED_COLS:
+            if nm_ in cols:
+                ws.cell(first + i_, cols.index(nm_) + 1).font = Font(bold=True, color="D00000")
     for ri in range(g_row, last + 1):
         for ci in range(1, n + 1):
             ws.cell(ri, ci).border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -1651,7 +1656,7 @@ def pay_xlsx(df, title, hdr):
         for ci in range(1, n + 1):
             for rr in (g_row, h_row):
                 c = ws.cell(rr, ci); b = c.border
-                c.border = Border(left=b.left, right=b.right, top=b.top, bottom=Side(style="medium", color="000000"))
+                c.border = Border(left=b.left, right=b.right, top=b.top, bottom=Side(style="thin", color="000000"))
     if istot:
         tr = ws.cell(last, 1 if cols[0] != "S/L" else 2).value
         lab = next((str(v) for v in d.iloc[-1].tolist() if str(v).startswith("TOTAL")), "TOTAL")
