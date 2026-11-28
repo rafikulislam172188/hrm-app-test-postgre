@@ -1762,8 +1762,7 @@ def view_pay(p):
     for c in ("Monthly Basic Rate", "Hr Rate"):
         d[c] = d[c].where(d[c] != 0, "")
     d = sign(d)
-    if "W.Place" in p.columns and (p["W.Place"].astype(str) != "").any():   # transferred worker: 2nd / 3rd salary line
-        d["W.Place"] = p["W.Place"].values
+    d["W.Place"] = p["W.Place"].values if "W.Place" in p.columns else ""   # always shown; filled only for workers who worked at 2 / 3 places
     return d
 
 
