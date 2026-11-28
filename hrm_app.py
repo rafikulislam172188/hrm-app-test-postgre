@@ -656,7 +656,7 @@ def _selcol():
 
 SCHEMA_VERSION = "2026-11-28b"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
-                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": "", "inc_from": "2026-11-27"}
+                "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": "", "inc_from": "2026-11-27", "logo_s1": "", "logo_s2": "", "logo_s3": "", "logo_c1": "#E0147A", "logo_c1t": "#FFFFFF", "logo_c2": "#0E3B29", "logo_c3": "#4A6A5B"}
 
 
 def init():
@@ -1293,13 +1293,27 @@ def _logo():
     if ir is None and not any(t):
         return None
     from reportlab.pdfbase.pdfmetrics import stringWidth
-    s1, s2, s3 = lh * 0.17, lh * 0.25, lh * 0.15
+    def _sz(k, auto):                              # Settings: size in pt, empty / 0 = automatic (follows the logo height)
+        try:
+            v = float(S(k))
+            return v if v > 0 else auto
+        except (TypeError, ValueError):
+            return auto
+    s1, s2, s3 = _sz("logo_s1", lh * 0.17), _sz("logo_s2", lh * 0.25), _sz("logo_s3", lh * 0.15)
     pad = lh * 0.12
     wd = [stringWidth(t[0], "Helvetica-Bold", s1) + 2 * pad if t[0] else 0,
           stringWidth(t[1], "Helvetica-Bold", s2) if t[1] else 0, stringWidth(t[2], "Helvetica", s3) if t[2] else 0]
     tw = max(wd)
     gap = lh * 0.22 if (ir is not None and tw) else 0
     return ir, iw_, lh, S("logo_pos"), dict(t=t, sz=(s1, s2, s3), pad=pad, tw=tw, gap=gap, total=iw_ + gap + tw)
+
+
+def _hexc(k, default):
+    from reportlab.lib import colors
+    try:
+        return colors.HexColor(str(S(k) or default))
+    except Exception:
+        return colors.HexColor(default)
 
 
 def _draw_logo(c, W, H, m, lg):
@@ -1320,14 +1334,14 @@ def _draw_logo(c, W, H, m, lg):
         y = top - max((h - th) / 2, 0)
         if t[0]:
             bw = f["tw"] if False else c.stringWidth(t[0], "Helvetica-Bold", s1) + 2 * f["pad"]
-            c.setFillColorRGB(0.878, 0.078, 0.478)
+            c.setFillColor(_hexc("logo_c1", "#E0147A"))
             c.roundRect(x, y - hb, bw, hb, hb / 2, stroke=0, fill=1)
-            c.setFillColorRGB(1, 1, 1)
+            c.setFillColor(_hexc("logo_c1t", "#FFFFFF"))
             c.setFont("Helvetica-Bold", s1)
             c.drawString(x + f["pad"], y - hb + (hb - s1) / 2 + s1 * 0.12, t[0])
             y -= hb + 2
         if t[1]:
-            c.setFillColorRGB(0.055, 0.231, 0.161)
+            c.setFillColor(_hexc("logo_c2", "#0E3B29"))
             c.setFont("Helvetica-Bold", s2)
             c.drawString(x, y - s2 * 0.95, t[1])
             y -= hm + 2
@@ -1337,7 +1351,7 @@ def _draw_logo(c, W, H, m, lg):
             c.line(x, y + 1, x + tw, y + 1)
             y -= 3
         if t[2]:
-            c.setFillColorRGB(0.29, 0.416, 0.357)
+            c.setFillColor(_hexc("logo_c3", "#4A6A5B"))
             c.setFont("Helvetica", s3)
             c.drawString(x, y - s3 * 0.95, t[2])
     c.restoreState()
@@ -3069,6 +3083,16 @@ elif page == "Settings":
     lt1 = tc[0].text_input("Logo text 1 (pink badge) - leave empty = not shown", S("logo_t1"))
     lt2 = tc[1].text_input("Logo text 2 (main line) - leave empty = not shown", S("logo_t2"))
     lt3 = tc[2].text_input("Logo text 3 (small line) - leave empty = not shown", S("logo_t3"))
+    st.caption("Logo text size (pt) and colour - 0 = automatic size (follows the logo height).")
+    sc = st.columns(3)
+    ls1 = sc[0].number_input("Text 1 size (pt)", 0.0, 60.0, float(S("logo_s1") or 0), 0.5)
+    ls2 = sc[1].number_input("Text 2 size (pt)", 0.0, 60.0, float(S("logo_s2") or 0), 0.5)
+    ls3 = sc[2].number_input("Text 3 size (pt)", 0.0, 60.0, float(S("logo_s3") or 0), 0.5)
+    kc = st.columns(4)
+    lc1 = kc[0].color_picker("Text 1 badge colour", S("logo_c1"))
+    lc1t = kc[1].color_picker("Text 1 letter colour", S("logo_c1t"))
+    lc2 = kc[2].color_picker("Text 2 colour", S("logo_c2"))
+    lc3 = kc[3].color_picker("Text 3 colour", S("logo_c3"))
     cc = st.columns(5)
     hbg = cc[0].color_picker("Header row colour", S("pdf_head_bg"))
     hfg = cc[1].color_picker("Header text colour", S("pdf_head_fg"))
@@ -3093,7 +3117,7 @@ elif page == "Settings":
             new_logo = base64.b64encode(raw_).decode() if len(raw_) < 600000 else ""
             if not new_logo:
                 st.error("The logo file is too big - use a smaller picture.")
-        for k, v in dict(logo_b64=new_logo, logo_t1=lt1, logo_t2=lt2, logo_t3=lt3, logo_pos=lpos, logo_h=lhh, prepared_by=prb, pdf_head_bg=hbg, pdf_head_fg=hfg,
+        for k, v in dict(logo_b64=new_logo, logo_t1=lt1, logo_t2=lt2, logo_t3=lt3, logo_pos=lpos, logo_h=lhh, logo_s1=ls1, logo_s2=ls2, logo_s3=ls3, logo_c1=lc1, logo_c1t=lc1t, logo_c2=lc2, logo_c3=lc3, prepared_by=prb, pdf_head_bg=hbg, pdf_head_fg=hfg,
                          pdf_tot_bg=tbg, pdf_tot_fg=tfg).items():
             q("INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)), fetch=False)
         st.success("Saved - all new prints use it."); st.rerun()
