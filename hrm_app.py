@@ -64,7 +64,7 @@ st.markdown("""<style>
 [data-testid="stSidebar"] label:hover{background:rgba(255,46,147,.40) !important;border-radius:8px}
 [data-testid="stTabs"] button:hover,[data-testid="stExpander"] summary:hover{color:#ff2e93 !important}
 </style>""", unsafe_allow_html=True)
-_COL = {"co": "#1f3a5f", "sec": "#e67e22", "spn": "#7d3c98", "lab": "#117a8b", "pay": "#2ea05a", "st": "#b7950b", "dt": "#64748b"}
+_COL = {"co": "#1f3a5f", "sec": "#e67e22", "spn": "#7d3c98", "lab": "#117a8b", "pay": "#2ea05a", "st": "#b7950b", "dt": "#64748b", "pm": "#c0392b"}
 # each coloured frame is preceded by an invisible marker (<span class="cb cb-co">); CSS colours the frame that follows it
 _css = '[data-testid="stElementContainer"]:has(.cb){display:none}.element-container:has(.cb){display:none}'
 for _k, _c in _COL.items():
@@ -875,7 +875,9 @@ def pay_filters(key):
     cos, secs, spns = (q(f"SELECT name FROM {t}").name.tolist() for t in ("companies", "departments", "sponsors"))
     c = st.columns(6 if key in ("pay", "rep") else 5)
     if key in ("pay", "rep"):       # salary payment: show only the Bank salary lines, only the Cash salary lines, or all
-        st.session_state["_pm_" + key] = c[5].selectbox("Payment", ["All", "Bank salary", "Cash salary"], key=key + "_pm")
+        with c[5]:
+            _ps = msel("Payment", ["Bank salary", "Cash salary"], key + "_pm")
+        st.session_state["_pm_" + key] = _ps[0] if len(_ps) == 1 and _ps[0] != "All" else "All"
     with c[0]:
         co = eff(msel("Company", cos, key + "_co"), cos)
     with c[1]:
@@ -1391,7 +1393,7 @@ PAY_GROUPS = [
                           "Mode", "Monthly Basic Rate", "Hr Rate", "OT Rate"]),
     ("Attendance Details", ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs"]),
     ("Salary Details", ["Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay",
-                        "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net"]),
+                        "Bonus", "Advance", "Absent Ded", "Deduction", "Net"]),
     ("Remarks", ["Bank", "Cash", "Signature", "Finger", "W.Place"])]
 _PGROUP = {c: g for g, cs in PAY_GROUPS for c in cs}
 
@@ -1744,7 +1746,7 @@ PCOLS = ["Code", "Name", "Join Date", "Iqama ID", "Passport No", "Company", "Sec
          "Monthly Basic Rate", "Hr Rate", "OT Rate", "Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs",
          "Hol Hrs", "Total Hrs", "Basic", "Food", "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days",
          "Ex.hrs Pay", "Allowances", "Bonus", "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice", "W.Place"]
-PVIEW = [c for c in PCOLS if c not in ("Invoice", "W.Place")]
+PVIEW = [c for c in PCOLS if c not in ("Invoice", "W.Place", "Allowances")]
 SUMC = ["Days", "Leave", "Absent", "No Work", "Normal Hrs", "OT Hrs", "Wknd Hrs", "Hol Hrs", "Total Hrs", "Basic", "Food",
         "Special Allow", "Other Allow", "OT Pay", "Wknd OT", "Hol Pay", "Ex Days", "Ex.hrs Pay", "Allowances", "Bonus",
         "Advance", "Absent Ded", "Deduction", "Net", "Bank", "Cash", "Invoice"]
