@@ -2496,7 +2496,7 @@ elif page == "Commission":
 
 # ---------------- Setup
 elif page == "Setup":
-    st.header("Setup: Client companies, Sections, Sponsors / Kofil")
+    st.header("Setup: Client companies, Sections, Sponsors / Kofil, Section bonus")
     c1, c2, c3 = st.columns(3)
     with c1:
         st.subheader("Client companies")
@@ -2523,6 +2523,24 @@ elif page == "Setup":
         if st.button("Add sponsor") and n:
             q("INSERT INTO sponsors(name,phone,approved_by) VALUES(?,?,?) ON CONFLICT DO NOTHING", (n, p_, apb), fetch=False); st.rerun()
         tbl(q("SELECT name, phone, approved_by FROM sponsors"), False)
+
+    st.divider()
+    st.subheader("Section bonus (e.g. 100 for heavy work)")
+    st.caption("Bonus per Company + Section, paid every month as a fixed amount - it goes in the 'Bonus' column and REPLACES the usual bonus for COMPANY labour of that "
+               "company + section (Outside labour gets no bonus at all). Paid in full when the worker has NO absent day. With any absent day the bonus is not paid, and Basic is cut + "
+               "the Absent Ded penalty is charged as before (Basic / days of the month x absent days).")
+    hc_, hs_ = q("SELECT id, name FROM companies ORDER BY name"), q("SELECT id, name FROM departments ORDER BY name")
+    x1, x2, x3, x4 = st.columns([2, 2, 1.5, 1])
+    hco = x1.selectbox("Company", hc_.name.tolist(), key="hv_co") if len(hc_) else None
+    hse = x2.selectbox("Section", hs_.name.tolist(), key="hv_se") if len(hs_) else None
+    ham = x3.number_input("Bonus per month", 0.0, step=10.0, key="hv_am")
+    x4.write("")
+    if x4.button("Save bonus", key="hv_go") and hco and hse:
+        q("INSERT INTO heavy_allow(company_id, dept_id, amount) VALUES(?,?,?) ON CONFLICT(company_id, dept_id) DO UPDATE SET amount=excluded.amount",
+          (int(hc_[hc_.name == hco].id.iloc[0]), int(hs_[hs_.name == hse].id.iloc[0]), float(ham)), fetch=False)
+        st.rerun()
+    tbl(q("""SELECT c.name AS company, d.name AS section, h.amount AS bonus_per_month FROM heavy_allow h
+             LEFT JOIN companies c ON c.id=h.company_id LEFT JOIN departments d ON d.id=h.dept_id ORDER BY c.name, d.name"""), False)
 
 # ---------------- Attendance
 elif page == "Attendance":
@@ -3434,17 +3452,6 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
                    used_in=[("employees", "sponsor_id"), ("attendance", "sponsor_id"), ("transfers", "from_sponsor"), ("transfers", "to_sponsor")], key="msp")
 
         with t4:
-            st.caption("Bonus per Company + Section, paid every month as a fixed amount (e.g. 100 for heavy work) - it goes in the 'Bonus' column and REPLACES the usual bonus for COMPANY labour of that company + section (Outside labour gets no bonus at all). "
-                       "Paid in full when the worker has NO absent day. With any absent day the bonus is not paid, and Basic is cut + the Absent Ded penalty is charged as before (Basic / days of the month x absent days).")
-            hc_, hs_ = q("SELECT id, name FROM companies ORDER BY name"), q("SELECT id, name FROM departments ORDER BY name")
-            x1, x2, x3 = st.columns(3)
-            hco = x1.selectbox("Company", hc_.name.tolist(), key="hv_co") if len(hc_) else None
-            hse = x2.selectbox("Section", hs_.name.tolist(), key="hv_se") if len(hs_) else None
-            ham = x3.number_input("Bonus per month", 0.0, step=10.0, key="hv_am")
-            if st.button("Save bonus", key="hv_go") and hco and hse:
-                q("INSERT INTO heavy_allow(company_id, dept_id, amount) VALUES(?,?,?) ON CONFLICT(company_id, dept_id) DO UPDATE SET amount=excluded.amount",
-                  (int(hc_[hc_.name == hco].id.iloc[0]), int(hs_[hs_.name == hse].id.iloc[0]), float(ham)), fetch=False)
-                st.rerun()
             manage("heavy_allow", """SELECT h.id, c.name AS company, d.name AS section, h.amount FROM heavy_allow h
                    LEFT JOIN companies c ON c.id=h.company_id LEFT JOIN departments d ON d.id=h.dept_id ORDER BY c.name, d.name""",
                    edit=["amount"], key="mhv")
