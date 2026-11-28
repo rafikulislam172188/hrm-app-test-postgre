@@ -2138,8 +2138,27 @@ if st.sidebar.button("⏻  Log out", key="logout", use_container_width=True):
     st.rerun()
 ICON = {"Dashboard": "🏠", "Employees": "👥", "Setup": "🏷️", "Attendance": "🗓️", "Leave": "🌴", "Adjustments": "➕",
         "Costs": "🧾", "Payroll": "💵", "Invoices": "📑", "Reports": "📊", "Transfer": "🔁", "Commission": "💰", "Bulk Attendance": "📆", "Settings": "⚙️", "Users": "🔑", "Audit Log": "📜"}
-page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}")
+_hist = st.session_state.setdefault("_hist", [])
+_hist[:] = [h_ for h_ in _hist if h_ in MENU]
+
+
+def _go_back():
+    h_ = st.session_state.get("_hist", [])
+    if h_:
+        st.session_state["menu"] = h_.pop()
+        st.session_state["_nopush"] = True
+
+
+st.sidebar.button(f"⬅ Back to {ICON.get(_hist[-1], '')} {_hist[-1]}" if _hist else "⬅ Back", key="back_btn",
+                  on_click=_go_back, disabled=not _hist, use_container_width=True)
+if st.session_state.get("menu") not in MENU:
+    st.session_state.pop("menu", None)
+page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}", key="menu")
 if st.session_state.get("_lastpage") != page:
+    _prev = st.session_state.get("_lastpage")
+    if _prev and not st.session_state.pop("_nopush", False) and _prev in MENU and (not _hist or _hist[-1] != _prev):
+        _hist.append(_prev)
+        del _hist[:-30]
     st.session_state["_lastpage"] = page
     _act("Opened menu", page, page)
 _ld = S("lock_date")
