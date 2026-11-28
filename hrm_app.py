@@ -654,7 +654,7 @@ def _selcol():
         return st.column_config.SelectboxColumn(options=["", "P", "A", "L", "O"])
 
 
-SCHEMA_VERSION = "2026-11-28c"   # change this whenever tables/settings change
+SCHEMA_VERSION = "2026-11-28d"   # change this whenever tables/settings change
 DEFAULTS = {"company": "My Company", "currency": "SAR", "timezone": "Asia/Riyadh",
                 "std_hours": "8", "work_days": "26", "ot_mult": "1.5", "date_fmt": "%d-%m-%Y", "gosi_pct": "0", "gosi_nat": "Saudi", "vat_pct": "15", "weekend": "4", "def_normal": "10", "def_ot": "2", "inc_years": "2", "inc_amount": "100", "inc_repeat": "No", "bulk_on": "Yes", "marquee_on": "Yes", "marquee_text": "RAFIK IT SOLUTION", "logo_b64": "", "logo_t1": "LABOUR", "logo_t2": "MANPOWER SUPPLY", "logo_t3": "SKILLED WORKFORCE · RECRUITMENT", "logo_pos": "Left", "logo_h": "40", "prepared_by": "", "pdf_head_bg": "#e3efe7", "pdf_head_fg": "#14472f", "pdf_tot_bg": "#fff4cf", "pdf_tot_fg": "#7c2d12", "lock_date": "", "inc_from": "2026-11-27", "logo_s1": "", "logo_s2": "", "logo_s3": "", "logo_c1": "#E0147A", "logo_c1t": "#FFFFFF", "logo_c2": "#0E3B29", "logo_c3": "#4A6A5B"}
 
@@ -682,6 +682,7 @@ def init():
     q("CREATE TABLE IF NOT EXISTS costs(id INTEGER PRIMARY KEY, day TEXT, category TEXT, emp_id INT, company_id INT, amount REAL, note TEXT)", fetch=False)
     q("CREATE TABLE IF NOT EXISTS bank_pay(id INTEGER PRIMARY KEY, emp_id INT, period_from TEXT, amount REAL, UNIQUE(emp_id, period_from))", fetch=False)
     q("CREATE TABLE IF NOT EXISTS heavy_allow(id INTEGER PRIMARY KEY, company_id INT, dept_id INT, amount REAL DEFAULT 0, UNIQUE(company_id, dept_id))", fetch=False)
+    q("CREATE TABLE IF NOT EXISTS exh_rules(id INTEGER PRIMARY KEY, company_id INT, dept_id INT, mode TEXT, hours REAL DEFAULT 10, UNIQUE(company_id, dept_id))", fetch=False)
     q("CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, ts TEXT, usr TEXT, action TEXT, tbl TEXT, detail TEXT)", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS holidays(id INTEGER PRIMARY KEY, from_day TEXT, to_day TEXT, company_id INT, dept_id INT,
         sponsor_id INT, rate REAL DEFAULT 0, note TEXT)""", fetch=False)
@@ -1820,6 +1821,9 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
     exc = q("SELECT id, exh_mode, exh_hours FROM companies")
     ex_cfg = {int(i): (m_ if isinstance(m_, str) else "Off", 10.0 if _isna(h_) else float(h_))
               for i, m_, h_ in zip(exc.id, exc.exh_mode, exc.exh_hours)}
+    exr = q("SELECT company_id, dept_id, mode, hours FROM exh_rules")        # Extra-hour rule of a Company + Section (Company labour only)
+    ex_sec = {(int(c_), int(d_)): (m_, 10.0 if _isna(h_) else float(h_)) for c_, d_, m_, h_ in zip(exr.company_id, exr.dept_id, exr["mode"], exr.hours)
+              if not _isna(c_) and not _isna(d_)}
     nm = lambda d, k: "-" if k is None else d.get(int(k), "-")
     std, otm, we = float(S("std_hours")), float(S("ot_mult")), int(S("weekend"))
     gp, gn = float(S("gosi_pct")), S("gosi_nat").strip().lower()
@@ -1912,6 +1916,8 @@ def calc_payroll(d1, d2, sec=(), lt=(), pt=(), spn=(), co=(), qs="", cyc=False, 
             if monthly:
                 days_ab = days_nw = 0
                 ex_mode, ex_thr = ex_cfg.get(cid, ("Off", 10.0))
+                if r.labour_type == "Company" and cid is not None and sid is not None and (int(cid), int(sid)) in ex_sec:
+                    ex_mode, ex_thr = ex_sec[(int(cid), int(sid))]       # the section rule replaces the company setting for this section
                 for mth in sorted({x[9] for x in g}):
                     gm = [x for x in g if x[9] == mth]
                     lo, hi, nd, wdm = bounds(mth)
@@ -2541,6 +2547,24 @@ elif page == "Setup":
         st.rerun()
     tbl(q("""SELECT c.name AS company, d.name AS section, h.amount AS bonus_per_month FROM heavy_allow h
              LEFT JOIN companies c ON c.id=h.company_id LEFT JOIN departments d ON d.id=h.dept_id ORDER BY c.name, d.name"""), False)
+
+    st.divider()
+    st.subheader("Extra-hour rule per section (new)")
+    st.caption("For a Company + Section: a day over N hours pays 1 hour of Basic (Basic / (N x days of the month)) in 'Ex Days' / 'Ex.hrs Pay'. "
+               "This rule REPLACES the company's Extra-hour setting (Client companies above) for COMPANY labour of that section only. "
+               "Sections without a rule here keep the company setting.")
+    e1, e2, e3, e4, e5 = st.columns([2, 2, 2, 1.2, 1])
+    eco = e1.selectbox("Company", hc_.name.tolist(), key="ex_co") if len(hc_) else None
+    ese = e2.selectbox("Section", hs_.name.tolist(), key="ex_se") if len(hs_) else None
+    emo = e3.selectbox("Mode", ["Instead of OT", "Plus OT", "Off"], key="ex_mo")
+    ehr = e4.number_input("N hours", 1.0, 24.0, 10.0, key="ex_hr")
+    e5.write("")
+    if e5.button("Save rule", key="ex_go") and eco and ese:
+        q("INSERT INTO exh_rules(company_id, dept_id, mode, hours) VALUES(?,?,?,?) ON CONFLICT(company_id, dept_id) DO UPDATE SET mode=excluded.mode, hours=excluded.hours",
+          (int(hc_[hc_.name == eco].id.iloc[0]), int(hs_[hs_.name == ese].id.iloc[0]), emo, float(ehr)), fetch=False)
+        st.rerun()
+    tbl(q("""SELECT c.name AS company, d.name AS section, x.mode, x.hours FROM exh_rules x
+             LEFT JOIN companies c ON c.id=x.company_id LEFT JOIN departments d ON d.id=x.dept_id ORDER BY c.name, d.name"""), False)
 
 # ---------------- Attendance
 elif page == "Attendance":
@@ -3438,7 +3462,7 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
                    r["passport_no"] if r["passport_no"] != o["passport_no"] else "", skip_id=int(r["id"]))), None))
 
     elif page == "Setup":
-        t1, t2, t3, t4 = st.tabs(["Companies", "Sections", "Sponsors / Kofil", "Section bonus"])
+        t1, t2, t3, t4, t5 = st.tabs(["Companies", "Sections", "Sponsors / Kofil", "Section bonus", "Extra-hour rules"])
         with t1:
             manage("companies", "SELECT id, name, vat, cycle_day, COALESCE(cycle_month,'Start') AS cycle_month, exh_mode, exh_hours FROM companies ORDER BY name",
                    edit=["name", "vat", "cycle_day", "cycle_month", "exh_mode", "exh_hours"],
@@ -3455,6 +3479,10 @@ if (_CAN_E or _CAN_D) and page in ("Commission", "Settings", "Employees", "Trans
             manage("heavy_allow", """SELECT h.id, c.name AS company, d.name AS section, h.amount FROM heavy_allow h
                    LEFT JOIN companies c ON c.id=h.company_id LEFT JOIN departments d ON d.id=h.dept_id ORDER BY c.name, d.name""",
                    edit=["amount"], key="mhv")
+        with t5:
+            manage("exh_rules", """SELECT x.id, c.name AS company, d.name AS section, x.mode, x.hours FROM exh_rules x
+                   LEFT JOIN companies c ON c.id=x.company_id LEFT JOIN departments d ON d.id=x.dept_id ORDER BY c.name, d.name""",
+                   edit=["mode", "hours"], selects={"mode": ["Instead of OT", "Plus OT", "Off"]}, key="mexr")
 
     elif page == "Attendance":
         cc = st.columns(7)
