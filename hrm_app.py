@@ -24,18 +24,28 @@ def _dmy(fn):
     return w
 
 
+def _unwrap(f):
+    # ageo jome thaka wrapper-er stor khule asol function ber kore
+    for _ in range(5000):
+        if getattr(f, "__name__", "") == "w" and getattr(f, "__closure__", None):
+            try:
+                f = f.__closure__[0].cell_contents
+                continue
+            except Exception:
+                break
+        break
+    return f
+
+
 try:
     from streamlit.delta_generator import DeltaGenerator
-    if not getattr(DeltaGenerator.date_input, "_dmy_", False):
-        _w = _dmy(DeltaGenerator.date_input)
-        _w._dmy_ = True
-        DeltaGenerator.date_input = _w
+    DeltaGenerator.date_input = _dmy(_unwrap(DeltaGenerator.date_input))
 except Exception:
     pass
-if not getattr(st.date_input, "_dmy_", False):
-    _w2 = _dmy(st.date_input)
-    _w2._dmy_ = True
-    st.date_input = _w2
+try:
+    st.date_input = _dmy(_unwrap(st.date_input))
+except Exception:
+    pass
 st.set_page_config(page_title="HRM", layout="wide")
 st.markdown("""<style>
 .stApp{background:#eef5ef;color:#1b2b22}
