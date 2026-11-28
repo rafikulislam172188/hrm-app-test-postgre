@@ -1,7 +1,7 @@
 """International HRM - Streamlit + SQLite (default) or PostgreSQL (set DATABASE_URL)
 Run: pip install -r requirements.txt && streamlit run hrm_app.py
 """
-import sqlite3, hashlib, io, html, calendar, hmac, re, os, json, uuid
+import sqlite3, hashlib, io, html, calendar, hmac, re, os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, available_timezones
 import pandas as pd
@@ -365,290 +365,6 @@ def _lock_many(sql, rows):
 
 
 
-# ---------------- Undo / Redo (every save / change / delete is stored as before / after rows; each user undoes his own work)
-_GRP = uuid.uuid4().hex            # one id per script run: everything saved by ONE click is undone together
-_USKIP = ("settings", "users", "audit_log", "undo_log")
-_UMAX = 5000
-_INS = re.compile(r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+\"?(\w+)\"?\s*\(([^)]*)\)\s*VALUES\s*\((.*?)\)\s*(ON\s+CONFLICT\s*(?:\(([^)]*)\))?.*)?$", re.I | re.S)
-
-
-def _jv(v):
-    if v is None:
-        return None
-    if hasattr(v, "item") and not isinstance(v, (str, bytes)):
-        v = v.item()
-    try:
-        if pd.isna(v):
-            return None
-    except Exception:
-        pass
-    return v if isinstance(v, (int, float, str, bool)) else str(v)
-
-
-def _jrows(df):
-    return [{k: _jv(v) for k, v in r.items()} for r in df.to_dict("records")]
-
-
-def _nz(r):
-    if r is None:
-        return None
-    out = {}
-    for k, v in r.items():
-        if isinstance(v, bool):
-            v = int(v)
-        if isinstance(v, (int, float)):
-            v = round(float(v), 6)
-        out[k] = v
-    return out
-
-
-def _sel_by(t, cols, vals):
-    w, pr = [], []
-    for c, v in zip(cols, vals):
-        v = _clean([v])[0]
-        if v is None:
-            w.append(f'"{c}" IS NULL')
-        else:
-            w.append(f'"{c}"=?')
-            pr.append(v)
-    return _run(f'SELECT * FROM {t} WHERE ' + " AND ".join(w) + " ORDER BY id", tuple(pr), True)
-
-
-def _sel_ids(t, ids):
-    ids = [int(i) for i in ids]
-    out = []
-    for i in range(0, len(ids), 400):
-        ch = ids[i:i + 400]
-        out.append(_run(f"SELECT * FROM {t} WHERE id IN ({','.join('?' * len(ch))})", tuple(ch), True))
-    return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
-
-
-def _u_log(t, old_rows, new_rows, state="done"):
-    try:
-        me = _who()
-        if st.session_state.get("_u_cleared") != _GRP:          # a new change ends the redo list of this user
-            _run("UPDATE undo_log SET state='dropped' WHERE usr=? AND state='undone'", (me,), False)
-            st.session_state["_u_cleared"] = _GRP
-        ts = datetime.now(ZoneInfo(_tz_ok() or DEFAULTS["timezone"])).strftime("%Y-%m-%d %H:%M:%S")
-        _run("INSERT INTO undo_log(ts, usr, grp, tbl, old_rows, new_rows, state) VALUES(?,?,?,?,?,?,?)",
-             (ts, me, _GRP, t, json.dumps(old_rows, default=str), json.dumps(new_rows, default=str), state), False)
-    except Exception:
-        pass
-
-
-def _u_diff_log(t, bdf, adf):
-    """Store only the rows that really changed (matched by id)."""
-    b = {r["id"]: r for r in _jrows(bdf)} if len(bdf) else {}
-    a = {r["id"]: r for r in _jrows(adf)} if len(adf) else {}
-    ids = [i for i in set(b) | set(a) if _nz(b.get(i)) != _nz(a.get(i))]
-    if ids:
-        _u_log(t, [b[i] for i in ids if i in b], [a[i] for i in ids if i in a])
-
-
-def _u_pre(sql, p, ctx):
-    """Before a save: remember the rows that will change. Returns None when nothing is tracked."""
-    try:
-        act, t = _tbl_of(sql)
-        if not t or t in _USKIP or not _who():
-            return None
-        if act == "INSERT":
-            m = _INS.match(sql.strip())
-            if not m:
-                return {"skip": t}
-            cols = [c.strip().strip('"') for c in m.group(2).split(",")]
-            vals = [v.strip() for v in m.group(3).split(",")]
-            if len(vals) != len(cols):
-                return {"skip": t}
-            kv, pi = {}, 0
-            for c, v in zip(cols, vals):
-                if v == "?":
-                    kv[c] = p[pi]
-                    pi += 1
-                elif re.fullmatch(r"-?\d+", v):
-                    kv[c] = int(v)
-                elif re.fullmatch(r"-?\d+\.\d+", v):
-                    kv[c] = float(v)
-                elif len(v) >= 2 and v[0] == "'" and v[-1] == "'":
-                    kv[c] = v[1:-1]
-            if pi != len(p):
-                return {"skip": t}
-            keys = [k.strip().strip('"') for k in m.group(5).split(",")] if m.group(5) else None
-            mc = keys if keys else list(kv)
-            if not mc or any(c not in kv for c in mc):
-                return {"skip": t}
-            return {"t": t, "mc": mc, "mv": [kv[c] for c in mc], "before": _sel_by(t, mc, [kv[c] for c in mc])}
-        old = ctx[4] if ctx else None
-        if old is None or "id" not in old.columns or len(old) > _UMAX:
-            return {"skip": t}
-        return {"t": t, "act": act, "before": old}
-    except Exception:
-        return None
-
-
-def _u_post(u):
-    if not u:
-        return
-    try:
-        if "skip" in u:
-            _u_log(u["skip"], [], [], "skip")
-            return
-        t, bdf = u["t"], u["before"]
-        if "mc" in u:
-            adf = _sel_by(t, u["mc"], u["mv"])
-        elif u["act"] == "DELETE":
-            adf = pd.DataFrame()
-        else:
-            adf = _sel_ids(t, list(bdf["id"]))
-        _u_diff_log(t, bdf, adf)
-    except Exception:
-        pass
-
-
-def _u_many_sel(t, keys, krows):
-    cols = [list(dict.fromkeys(r[i] for r in krows)) for i in range(len(keys))]
-    if any(len(c) > 5000 for c in cols[1:]):
-        raise ValueError("too many")
-    want = {tuple(str(x) for x in r) for r in krows}
-    out = []
-    for i in range(0, len(cols[0]), 400):
-        ch = cols[0][i:i + 400]
-        w, pr = [f'"{keys[0]}" IN ({",".join("?" * len(ch))})'], list(ch)
-        for k, vs in zip(keys[1:], cols[1:]):
-            w.append(f'"{k}" IN ({",".join("?" * len(vs))})')
-            pr += list(vs)
-        out.append(_run(f"SELECT * FROM {t} WHERE " + " AND ".join(w), tuple(pr), True))
-    df = pd.concat(out, ignore_index=True) if out else pd.DataFrame()
-    if len(df):
-        df = df[[tuple(str(x) for x in r) in want for r in df[keys].itertuples(index=False, name=None)]]
-    return df
-
-
-def _u_many_pre(sql, rows):
-    try:
-        act, t = _tbl_of(sql)
-        if act != "INSERT" or not t or t in _USKIP or not _who():
-            return None
-        m = _INS.match(sql.strip())
-        if not m or not m.group(5) or len(rows) > 20000:
-            return {"skip": t}
-        cols = [c.strip().strip('"') for c in m.group(2).split(",")]
-        keys = [k.strip().strip('"') for k in m.group(5).split(",")]
-        if any(k not in cols for k in keys) or len(m.group(3).split(",")) != len(cols) or "?" * 1 not in m.group(3):
-            return {"skip": t}
-        ix = [cols.index(k) for k in keys]
-        krows = [tuple(r[i] for i in ix) for r in rows]
-        return {"t": t, "keys": keys, "krows": krows, "before": _u_many_sel(t, keys, krows)}
-    except Exception:
-        return {"skip": _tbl_of(sql)[1] or "?"}
-
-
-def _u_many_post(u):
-    if not u:
-        return
-    try:
-        if "skip" in u:
-            _u_log(u["skip"], [], [], "skip")
-            return
-        _u_diff_log(u["t"], u["before"], _u_many_sel(u["t"], u["keys"], u["krows"]))
-    except Exception:
-        _u_log(u.get("t", "?"), [], [], "skip")
-
-
-def _u_locked(t, rows):
-    if st.session_state.get("role") == "Admin" or st.session_state.get("_lockok") or t not in _LOCK_T:
-        return ""
-    ld = _lock_date()
-    if not ld:
-        return ""
-    cols = [c.strip('"') for c in _LOCK_T[t]]
-    for r in rows:
-        for c in cols:
-            v = r.get(c)
-            if isinstance(v, str) and _DRE.match(v) and v <= ld:
-                return ld
-    return ""
-
-
-def _u_apply(t, expect, target):
-    """Move table rows from state 'expect' (what must be there now) to state 'target'. Returns an error text or None."""
-    ex = {r["id"]: r for r in expect}
-    tg = {r["id"]: r for r in target}
-    ld = _u_locked(t, list(ex.values()) + list(tg.values()))
-    if ld:
-        return f"dates up to {ld} are locked"
-    ids = set(ex) | set(tg)
-    cur = {}
-    if ids:
-        df = _sel_ids(t, ids)
-        cur = {r["id"]: r for r in _jrows(df)} if len(df) else {}
-    for i in ids:
-        if _nz(ex.get(i)) != _nz(cur.get(i)):
-            return "these records were changed after your action"
-    for i in ex:
-        if i not in tg:
-            _run(f"DELETE FROM {t} WHERE id=?", (i,), False)
-    for i, r in tg.items():
-        cols = [c for c in r if c != "id"]
-        if i in ex:
-            if _nz(ex[i]) != _nz(r) and cols:
-                _run(f"UPDATE {t} SET " + ",".join(f'"{c}"=?' for c in cols) + " WHERE id=?", (*_clean([r[c] for c in cols]), i), False)
-        else:
-            cc = ["id"] + cols
-            _run(f"INSERT INTO {t}(" + ",".join(f'"{c}"' for c in cc) + ") VALUES(" + ",".join("?" * len(cc)) + ")", _clean([r[c] for c in cc]), False)
-    return None
-
-
-def _u_state():
-    """(last undoable group, first redoable group) of this user."""
-    try:
-        df = _run("SELECT id, grp, tbl, state, ts FROM undo_log WHERE usr=? AND state IN ('done','skip','undone') ORDER BY id", (_who(),), True)
-    except Exception:
-        return None, None
-    d = df[df.state.isin(["done", "skip"])]
-    u = df[df.state == "undone"]
-    return (d.iloc[-1] if len(d) else None), (u.iloc[0] if len(u) else None)
-
-
-def _u_run(undo):
-    try:
-        last, nxt = _u_state()
-        g = last if undo else nxt
-        if g is None:
-            return "Nothing to " + ("undo" if undo else "redo")
-        me = _who()
-        if undo:
-            ops = _run("SELECT * FROM undo_log WHERE usr=? AND grp=? AND state IN ('done','skip') ORDER BY id DESC", (me, g.grp), True)
-            if (ops.state == "skip").any():
-                _run("UPDATE undo_log SET state='dropped' WHERE usr=? AND grp=?", (me, g.grp), False)
-                return "That last action is too large or complex to undo - skipped. Press Undo again for the one before."
-        else:
-            ops = _run("SELECT * FROM undo_log WHERE usr=? AND grp=? AND state='undone' ORDER BY id", (me, g.grp), True)
-        n = 0
-        for _, o in ops.iterrows():
-            o_old, o_new = json.loads(o.old_rows or "[]"), json.loads(o.new_rows or "[]")
-            err = _u_apply(o.tbl, o_new, o_old) if undo else _u_apply(o.tbl, o_old, o_new)
-            if err:
-                _QC.clear()
-                return f"Cannot {'undo' if undo else 'redo'}: {err}." + (" (part of it was already done)" if n else "")
-            _run("UPDATE undo_log SET state=? WHERE id=?", ("undone" if undo else "done", int(o.id)), False)
-            n += 1
-        _QC.clear()
-        tb = ", ".join(dict.fromkeys(ops.tbl))
-        _audit_raw(me, "Undo" if undo else "Redo", tb, f"{n} change(s) {'reversed' if undo else 'applied again'}")
-        return ("↩ Undone: " if undo else "↪ Redone: ") + tb
-    except Exception as ex:
-        _QC.clear()
-        return f"Undo/Redo failed: {ex}"
-
-
-def _do_undo():
-    st.session_state["_umsg"] = _u_run(True)
-
-
-def _do_redo():
-    st.session_state["_umsg"] = _u_run(False)
-
-
 def q(sql, p=(), fetch=True):
     key = None
     if fetch:
@@ -662,14 +378,12 @@ def q(sql, p=(), fetch=True):
     else:
         _guard(sql)
         ctx = _pre_write(sql, p)
-        uctx = _u_pre(sql, p, ctx)
         _QC.clear()
     df = _run(sql, p, fetch)
     if fetch and key is not None:
         _QC[key] = df.copy()
     if not fetch:
         _post_write(ctx)
-        _u_post(uctx)
     return df
 
 
@@ -680,7 +394,6 @@ def q_many(sql, rows):
     _guard(sql)
     rows = [_clean(r) for r in rows]
     _lock_many(sql, rows)
-    uctx = _u_many_pre(sql, rows)
     _QC.clear()
     if PG:
         from psycopg2.extras import execute_batch
@@ -701,7 +414,6 @@ def q_many(sql, rows):
             c.executemany(sql, rows)
             c.commit()
     _post_many(sql, rows)
-    _u_many_post(uctx)
 
 
 def pw(p):
@@ -988,7 +700,6 @@ def init():
     q("CREATE TABLE IF NOT EXISTS heavy_allow(id INTEGER PRIMARY KEY, company_id INT, dept_id INT, amount REAL DEFAULT 0, UNIQUE(company_id, dept_id))", fetch=False)
     q("CREATE TABLE IF NOT EXISTS exh_rules(id INTEGER PRIMARY KEY, company_id INT, dept_id INT, mode TEXT, hours REAL DEFAULT 10, UNIQUE(company_id, dept_id))", fetch=False)
     q("CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, ts TEXT, usr TEXT, action TEXT, tbl TEXT, detail TEXT)", fetch=False)
-    q("CREATE TABLE IF NOT EXISTS undo_log(id INTEGER PRIMARY KEY, ts TEXT, usr TEXT, grp TEXT, tbl TEXT, old_rows TEXT, new_rows TEXT, state TEXT)", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS holidays(id INTEGER PRIMARY KEY, from_day TEXT, to_day TEXT, company_id INT, dept_id INT,
         sponsor_id INT, rate REAL DEFAULT 0, note TEXT)""", fetch=False)
     q("""CREATE TABLE IF NOT EXISTS commissions(id INTEGER PRIMARY KEY, person TEXT, phone TEXT, company_id INT, dept_id INT,
@@ -2440,24 +2151,6 @@ def _go_back():
 
 st.sidebar.button(f"⬅ Back to {ICON.get(_hist[-1], '')} {_hist[-1]}" if _hist else "⬅ Back", key="back_btn",
                   on_click=_go_back, disabled=not _hist, use_container_width=True)
-_ul, _ur = _u_state()
-_uc = st.sidebar.columns(2)
-_uc[0].button("↩ Undo", key="undo_btn", on_click=_do_undo, disabled=_ul is None, use_container_width=True,
-              help=(f"Undo your last change ({_ul.tbl}, {_ul.ts})" if _ul is not None else "Nothing to undo"))
-_uc[1].button("↪ Redo", key="redo_btn", on_click=_do_redo, disabled=_ur is None, use_container_width=True,
-              help=(f"Redo ({_ur.tbl}, {_ur.ts})" if _ur is not None else "Nothing to redo"))
-if st.session_state.get("_umsg"):
-    _m = st.session_state.pop("_umsg")
-    try:
-        st.toast(_m)
-    except Exception:
-        st.sidebar.info(_m)
-if not st.session_state.get("_upurged"):
-    st.session_state["_upurged"] = True
-    try:
-        _run("DELETE FROM undo_log WHERE ts < ?", ((datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),), False)
-    except Exception:
-        pass
 if st.session_state.get("menu") not in MENU:
     st.session_state.pop("menu", None)
 page = st.sidebar.radio("Menu", MENU, format_func=lambda x: f"{ICON.get(x, '')}  {x}", key="menu")
